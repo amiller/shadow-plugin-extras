@@ -2,7 +2,7 @@
  * See LICENSE for licensing information
  */
 
-#include "leveldb-sample.h"
+#include "leveldb-sample-cpp.hpp"
 #include <leveldb/db.h>
 #include <string.h>
 
