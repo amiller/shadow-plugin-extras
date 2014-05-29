@@ -37,6 +37,7 @@
     <!-- the plug-ins we will be using -->
 
     <plugin id="leveldb-sample" path="libshadow-plugin-leveldb-sample.so" />
+    <plugin id="leveldb-sample-cpp" path="libshadow-plugin-leveldb-sample-cpp.so" />
 
     <!-- the length of our experiment in seconds -->
 
@@ -44,11 +45,19 @@
 
     <!-- our nodes and the applications they run -->
 
+    <!--
     <node id="helloserver" geocodehint="US">
         <application plugin="leveldb-sample" time="10" arguments="" />
     </node>
     <node id="helloclient" quantity="1">
         <application plugin="leveldb-sample" time="20" arguments="helloserver" />
+    </node>
+    -->
+    <node id="helloserver++" geocodehint="US">
+        <application plugin="leveldb-sample-cpp" time="10" arguments="" />
+    </node>
+    <node id="helloclient++" quantity="1">
+        <application plugin="leveldb-sample-cpp" time="20" arguments="helloserver++" />
     </node>
 
 </shadow>
