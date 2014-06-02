@@ -38,6 +38,8 @@
 
     <plugin id="leveldb-sample" path="libshadow-plugin-leveldb-sample.so" />
     <plugin id="leveldb-sample-cpp" path="libshadow-plugin-leveldb-sample-cpp.so" />
+    <plugin id="leveldb-sample-mt" path="libshadow-plugin-leveldb-sample-mt.so" />
+    <plugin id="leveldb-sample-pth" path="libshadow-plugin-leveldb-sample-pth.so" />
 
     <!-- the length of our experiment in seconds -->
 
@@ -53,11 +55,29 @@
         <application plugin="leveldb-sample" time="20" arguments="helloserver" />
     </node>
     -->
+    <!--
     <node id="helloserver++" geocodehint="US">
         <application plugin="leveldb-sample-cpp" time="10" arguments="" />
     </node>
     <node id="helloclient++" quantity="1">
         <application plugin="leveldb-sample-cpp" time="20" arguments="helloserver++" />
     </node>
+    -->
+    <!--
+    <node id="helloserver-mt" geocodehint="US">
+        <application plugin="leveldb-sample-mt" time="10" arguments="" />
+    </node>
+    <node id="helloclient-mt" quantity="1">
+        <application plugin="leveldb-sample-mt" time="20" arguments="helloserver-mt" />
+    </node>
+    -->
+
+    <node id="helloserver-pth" geocodehint="US">
+        <application plugin="leveldb-sample-pth" time="10" arguments="" />
+    </node>
+    <node id="helloclient-pth" quantity="1">
+        <application plugin="leveldb-sample-pth" time="20" arguments="helloserver-pth" />
+    </node>
+
 
 </shadow>

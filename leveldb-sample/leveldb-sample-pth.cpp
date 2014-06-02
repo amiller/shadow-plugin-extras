@@ -14,6 +14,8 @@
 #include <errno.h>
 #include <shd-library.h>
 
+#include <pth.h>
+
 typedef struct _Hello Hello;
 
 extern "C" Hello* hello_new(int argc, char* argv[], ShadowLogFunc slogf);
@@ -27,7 +29,9 @@ extern void doWork(void);
 
 #include <string.h>
 
-#define HELLO_PORT 12346
+static int *global_ed;
+
+#define HELLO_PORT 12348
 
 /* all state for hello is stored here */
 struct _Hello {
@@ -56,8 +60,8 @@ struct _Hello {
 /* if option is specified, run as client, else run as server */
 static const char* USAGE = "USAGE: hello [hello_server_hostname]\n";
 
-static int _hello_startClient(Hello* h, char* serverHostname) {
-	h->client.serverHostName = strndup(serverHostname, (size_t)50);
+static int _hello_startClient(Hello* h) {
+  //h->client.serverHostName = strndup(serverHostname, (size_t)50);
 
 	/* get the address of the server */
 	struct addrinfo* serverInfo;
@@ -72,7 +76,7 @@ static int _hello_startClient(Hello* h, char* serverHostname) {
 	freeaddrinfo(serverInfo);
 
 	/* create the client socket and get a socket descriptor */
-	h->client.sd = socket(AF_INET, (SOCK_STREAM | SOCK_NONBLOCK), 0);
+	h->client.sd = socket(AF_INET, (SOCK_STREAM), 0);
 	if(h->client.sd == -1) {
 		h->slogf(SHADOW_LOG_LEVEL_CRITICAL, __FUNCTION__,
 				"unable to start client: error in socket");
@@ -108,13 +112,65 @@ static int _hello_startClient(Hello* h, char* serverHostname) {
 		return -1;
 	}
 
+	/* to keep things simple, there is explicitly no resilience here.
+	 * we allow only one chance to send the message and one to receive the response.
+	 */
+
+	ssize_t numBytes = 0;
+	char message[10];
+
+	/* prepare the message */
+	memset(message, 0, (size_t)10);
+	snprintf(message, 10, "%s", "Hello?");
+	
+	/* send the message */
+	numBytes = pth_send(h->client.sd, message, (size_t)6, 0);
+
+	/* log result */
+	if(numBytes == 6) {
+	  h->slogf(SHADOW_LOG_LEVEL_MESSAGE, __FUNCTION__,
+		   "successfully sent '%s' message", message);
+	} else {
+	  h->slogf(SHADOW_LOG_LEVEL_WARNING, __FUNCTION__,
+		   "unable to send message");
+	}
+
+	/* tell epoll we don't care about writing anymore */
+	{
+	  struct epoll_event ev;
+	  memset(&ev, 0, sizeof(struct epoll_event));
+	  ev.events = EPOLLIN;
+	  ev.data.fd = h->client.sd;
+	  epoll_ctl(h->ed, EPOLL_CTL_MOD, h->client.sd, &ev);
+	}
+
+	/* prepare to accept the message */
+	memset(message, 0, (size_t)10);
+
+	numBytes = pth_recv(h->client.sd, message, (size_t)6, 0);
+
+	/* log result */
+	if(numBytes > 0) {
+	  h->slogf(SHADOW_LOG_LEVEL_MESSAGE, __FUNCTION__,
+		   "successfully received '%s' message", message);
+	} else {
+	  h->slogf(SHADOW_LOG_LEVEL_WARNING, __FUNCTION__,
+		   "unable to receive message");
+	}
+
+	/* tell epoll we no longer want to watch this socket */
+	epoll_ctl(h->ed, EPOLL_CTL_DEL, h->client.sd, NULL);
+	close(h->client.sd);
+	h->client.sd = 0;
+	h->isDone = 1;
+
 	/* success! */
 	return 0;
 }
 
 static int _hello_startServer(Hello* h) {
 	/* create the socket and get a socket descriptor */
-	h->server.sd = socket(AF_INET, (SOCK_STREAM | SOCK_NONBLOCK), 0);
+	h->server.sd = socket(AF_INET, (SOCK_STREAM), 0);
 	if (h->server.sd == -1) {
 		h->slogf(SHADOW_LOG_LEVEL_CRITICAL, __FUNCTION__,
 				"unable to start server: error in socket");
@@ -158,17 +214,66 @@ static int _hello_startServer(Hello* h) {
 		return -1;
 	}
 
+	ssize_t numBytes = 0;
+	char message[10];
+
+	/* accept new connection from a remote client */
+	int newClientSD = pth_accept(h->server.sd, NULL, NULL);
+
+	/* now register this new socket so we know when its ready */
+	memset(&ev, 0, sizeof(struct epoll_event));
+	ev.events = EPOLLIN;
+	ev.data.fd = newClientSD;
+	epoll_ctl(h->ed, EPOLL_CTL_ADD, newClientSD, &ev);
+
+	/* prepare to accept the message */
+	memset(message, 0, (size_t)10);
+	numBytes = pth_recv(newClientSD, message, (size_t)6, 0);
+
+	/* log result */
+	if(numBytes > 0) {
+	  h->slogf(SHADOW_LOG_LEVEL_MESSAGE, __FUNCTION__,
+		   "successfully received '%s' message", message);
+	} else if(numBytes == 0){
+	  /* client got response and closed */
+	  /* tell epoll we no longer want to watch this socket */
+	  epoll_ctl(h->ed, EPOLL_CTL_DEL, newClientSD, NULL);
+	  close(newClientSD);
+	  printf("client closed socket\n");
+	} else {
+	  h->slogf(SHADOW_LOG_LEVEL_WARNING, __FUNCTION__,
+		   "unable to receive message");
+	}
+
+	/* tell epoll we want to write the response now */
+	memset(&ev, 0, sizeof(struct epoll_event));
+	ev.events = EPOLLOUT;
+	ev.data.fd = newClientSD;
+	epoll_ctl(h->ed, EPOLL_CTL_MOD, newClientSD, &ev);
+
+	/* prepare the response message */
+	memset(message, 0, (size_t)10);
+	snprintf(message, 10, "%s", "World!");
+
+	/* send the message */
+	numBytes = pth_send(newClientSD, message, (size_t)6, 0);
+
+	/* log result */
+	if(numBytes == 6) {
+	  h->slogf(SHADOW_LOG_LEVEL_MESSAGE, __FUNCTION__,
+		   "successfully sent '%s' message", message);
+	} else {
+	  h->slogf(SHADOW_LOG_LEVEL_WARNING, __FUNCTION__,
+		   "unable to send message");
+	}
+
+	/* tell epoll we no longer want to watch this socket */
+	epoll_ctl(h->ed, EPOLL_CTL_DEL, newClientSD, NULL);
+	close(newClientSD);
+	h->isDone = 1;
+
 	/* success! */
 	return 0;
-}
-
-const char *getDefaultDataDir() {
-  const char *home = getenv("HOME");
-  const int MAXLEN = 2048;
-  char *buf = (char *) malloc(MAXLEN);
-  assert(strlen(home) < 300);
-  sprintf(buf, "%s/shadow_testdb", home);
-  return buf;
 }
 
 Hello* hello_new(int argc, char* argv[], ShadowLogFunc slogf) {
@@ -192,6 +297,9 @@ Hello* hello_new(int argc, char* argv[], ShadowLogFunc slogf) {
 	Hello* h = (Hello *) calloc(1, sizeof(Hello));
 	assert(h);
 
+	/* Set the global static epoll descriptor */
+	global_ed = &h->ed;
+
 	h->ed = mainEpollDescriptor;
 	h->slogf = slogf;
 	h->isDone = 0;
@@ -199,18 +307,23 @@ Hello* hello_new(int argc, char* argv[], ShadowLogFunc slogf) {
 
 	// Both Client and Server will run the threading exercise
 	slogf(SHADOW_LOG_LEVEL_CRITICAL, __FUNCTION__, "Starting threads");
-	doWork();
-	slogf(SHADOW_LOG_LEVEL_CRITICAL, __FUNCTION__, "Threads done");
+	pth_init();
+
 
 	/* extract the server hostname from argv if in client mode */
 	int isFail = 0;
+	pth_t worker;
 	if(argc == 2) {
-		/* client mode */
-		isFail = _hello_startClient(h, argv[1]);
+	  /* client mode */
+	  h->client.serverHostName = strndup(argv[1], (size_t)50);
+	  pth_spawn(PTH_ATTR_DEFAULT, (void * (*) (void *)) _hello_startClient, h);
 	} else {
-		/* server mode */
-		isFail = _hello_startServer(h);
+	  /* server mode */
+	  pth_spawn(PTH_ATTR_DEFAULT, (void * (*) (void *)) _hello_startServer, h);
 	}
+
+	// Jog the threads once
+	hello_ready(h);
 
 	if(isFail) {
 		hello_free(h);
@@ -233,174 +346,13 @@ void hello_free(Hello* h) {
 	free(h);
 }
 
-static void _hello_activateClient(Hello* h, int sd, uint32_t events) {
-	ssize_t numBytes = 0;
-	char message[10];
-	assert(h->client.sd == sd);
-
-	if(events & EPOLLOUT) {
-		h->slogf(SHADOW_LOG_LEVEL_DEBUG, __FUNCTION__, "EPOLLOUT is set");
-	}
-	if(events & EPOLLIN) {
-		h->slogf(SHADOW_LOG_LEVEL_DEBUG, __FUNCTION__, "EPOLLIN is set");
-	}
-
-	/* to keep things simple, there is explicitly no resilience here.
-	 * we allow only one chance to send the message and one to receive the response.
-	 */
-
-	if(events & EPOLLOUT) {
-		/* the kernel can accept data from us,
-		 * and we care because we registered EPOLLOUT on sd with epoll */
-
-		/* prepare the message */
-		memset(message, 0, (size_t)10);
-		snprintf(message, 10, "%s", "Hello?");
-
-		/* send the message */
-		numBytes = send(sd, message, (size_t)6, 0);
-
-		/* log result */
-		if(numBytes == 6) {
-			h->slogf(SHADOW_LOG_LEVEL_MESSAGE, __FUNCTION__,
-					"successfully sent '%s' message", message);
-		} else {
-			h->slogf(SHADOW_LOG_LEVEL_WARNING, __FUNCTION__,
-					"unable to send message");
-		}
-
-		/* tell epoll we don't care about writing anymore */
-		struct epoll_event ev;
-		memset(&ev, 0, sizeof(struct epoll_event));
-		ev.events = EPOLLIN;
-		ev.data.fd = sd;
-		epoll_ctl(h->ed, EPOLL_CTL_MOD, sd, &ev);
-	} else if(events & EPOLLIN) {
-		/* there is data available to read from the kernel,
-		 * and we care because we registered EPOLLIN on sd with epoll */
-
-		/* prepare to accept the message */
-		memset(message, 0, (size_t)10);
-
-		numBytes = recv(sd, message, (size_t)6, 0);
-
-		/* log result */
-		if(numBytes > 0) {
-			h->slogf(SHADOW_LOG_LEVEL_MESSAGE, __FUNCTION__,
-					"successfully received '%s' message", message);
-		} else {
-			h->slogf(SHADOW_LOG_LEVEL_WARNING, __FUNCTION__,
-					"unable to receive message");
-		}
-
-		/* tell epoll we no longer want to watch this socket */
-		epoll_ctl(h->ed, EPOLL_CTL_DEL, sd, NULL);
-
-		close(sd);
-		h->client.sd = 0;
-		h->isDone = 1;
-	}
-}
-
-static void _hello_activateServer(Hello* h, int sd, uint32_t events) {
-	ssize_t numBytes = 0;
-	char message[10];
-	struct epoll_event ev;
-
-	if(events & EPOLLOUT) {
-		h->slogf(SHADOW_LOG_LEVEL_DEBUG, __FUNCTION__, "EPOLLOUT is set");
-	}
-	if(events & EPOLLIN) {
-		h->slogf(SHADOW_LOG_LEVEL_DEBUG, __FUNCTION__, "EPOLLIN is set");
-	}
-
-	if(sd == h->server.sd) {
-		/* data on a listening socket means a new client connection */
-		assert(events & EPOLLIN);
-
-		/* accept new connection from a remote client */
-		int newClientSD = accept(sd, NULL, NULL);
-
-		/* now register this new socket so we know when its ready */
-		memset(&ev, 0, sizeof(struct epoll_event));
-		ev.events = EPOLLIN;
-		ev.data.fd = newClientSD;
-		epoll_ctl(h->ed, EPOLL_CTL_ADD, newClientSD, &ev);
-	} else {
-		/* a client is communicating with us over an existing connection */
-		if(events & EPOLLIN) {
-			/* prepare to accept the message */
-			memset(message, 0, (size_t)10);
-
-			numBytes = recv(sd, message, (size_t)6, 0);
-
-			/* log result */
-			if(numBytes > 0) {
-				h->slogf(SHADOW_LOG_LEVEL_MESSAGE, __FUNCTION__,
-						"successfully received '%s' message", message);
-			} else if(numBytes == 0){
-				/* client got response and closed */
-				/* tell epoll we no longer want to watch this socket */
-				epoll_ctl(h->ed, EPOLL_CTL_DEL, sd, NULL);
-				close(sd);
-			} else {
-				h->slogf(SHADOW_LOG_LEVEL_WARNING, __FUNCTION__,
-						"unable to receive message");
-			}
-
-			/* tell epoll we want to write the response now */
-			memset(&ev, 0, sizeof(struct epoll_event));
-			ev.events = EPOLLOUT;
-			ev.data.fd = sd;
-			epoll_ctl(h->ed, EPOLL_CTL_MOD, sd, &ev);
-		} else if(events & EPOLLOUT) {
-			/* prepare the response message */
-			memset(message, 0, (size_t)10);
-			snprintf(message, 10, "%s", "World!");
-
-			/* send the message */
-			numBytes = send(sd, message, (size_t)6, 0);
-
-			/* log result */
-			if(numBytes == 6) {
-				h->slogf(SHADOW_LOG_LEVEL_MESSAGE, __FUNCTION__,
-						"successfully sent '%s' message", message);
-			} else {
-				h->slogf(SHADOW_LOG_LEVEL_WARNING, __FUNCTION__,
-						"unable to send message");
-			}
-
-			/* now wait until we read 0 for client close event */
-			memset(&ev, 0, sizeof(struct epoll_event));
-			ev.events = EPOLLIN;
-			ev.data.fd = sd;
-			epoll_ctl(h->ed, EPOLL_CTL_MOD, sd, &ev);
-		}
-	}
-}
-
 void hello_ready(Hello* h) {
-	assert(h);
-
-	/* collect the events that are ready */
-	struct epoll_event epevs[10];
-	int nfds = epoll_wait(h->ed, epevs, 10, 0);
-	if(nfds == -1) {
-		h->slogf(SHADOW_LOG_LEVEL_CRITICAL, __FUNCTION__,
-				"error in epoll_wait");
-		return;
-	}
-
-	/* activate correct component for every socket thats ready */
-	for(int i = 0; i < nfds; i++) {
-		int d = epevs[i].data.fd;
-		uint32_t e = epevs[i].events;
-		if(d == h->client.sd) {
-			_hello_activateClient(h, d, e);
-		} else {
-			_hello_activateServer(h, d, e);
-		}
-	}
+  assert(h);
+  pth_yield(NULL);
+  while (pth_ctrl(PTH_CTRL_GETTHREADS_READY | PTH_CTRL_GETTHREADS_NEW)) {
+    pth_attr_set(pth_attr_of(pth_self()), PTH_ATTR_PRIO, PTH_PRIO_MIN);
+    pth_yield(NULL);
+  }
 }
 
 int hello_getEpollDescriptor(Hello* h) {
