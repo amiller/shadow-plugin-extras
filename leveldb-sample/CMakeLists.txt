@@ -6,32 +6,8 @@ link_directories(${Boost_LIBRARY_DIR})
 
 set(CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake/" ${CMAKE_MODULE_PATH} )
 find_package(LEVELDB REQUIRED)
-find_package(Pth REQUIRED)
 
 include_directories(${LEVELDB_INCLUDE})
-include_directories(${Pth_INCLUDE})
-
-## C Version
-## create and install a shared library that can plug into shadow
-add_bitcode(shadow-plugin-leveldb-sample-bitcode leveldb-sample-plugin.c leveldb-sample.c)
-add_plugin(shadow-plugin-leveldb-sample shadow-plugin-leveldb-sample-bitcode)
-target_link_libraries(shadow-plugin-leveldb-sample ${LEVELDB_LIBS})
-install(TARGETS shadow-plugin-leveldb-sample DESTINATION plugins)
-
-## CPP Version
-## create and install a shared library that can plug into shadow
-add_bitcode(shadow-plugin-leveldb-sample-cpp-bitcode leveldb-sample-plugin.c leveldb-sample-cpp.cpp)
-add_plugin(shadow-plugin-leveldb-sample-cpp shadow-plugin-leveldb-sample-cpp-bitcode)
-target_link_libraries(shadow-plugin-leveldb-sample-cpp ${LEVELDB_LIBS})
-install(TARGETS shadow-plugin-leveldb-sample-cpp DESTINATION plugins)
-
-## Multithread Version
-## create and install a shared library that can plug into shadow
-add_bitcode(shadow-plugin-leveldb-sample-mt-bitcode leveldb-sample-plugin.c leveldb-sample-mt.cpp thread_toy.cpp)
-add_plugin(shadow-plugin-leveldb-sample-mt shadow-plugin-leveldb-sample-mt-bitcode)
-target_link_libraries(shadow-plugin-leveldb-sample-mt ${Boost_LIBRARIES})
-install(TARGETS shadow-plugin-leveldb-sample-mt DESTINATION plugins)
-
 
 
 #=============
@@ -39,6 +15,7 @@ install(TARGETS shadow-plugin-leveldb-sample-mt DESTINATION plugins)
 #=============
 
 set(PTH_ROOT_DIR ${CMAKE_SOURCE_DIR}/gnu-pth)
+include_directories(${PTH_ROOT_DIR})
 
 set(PTH_SOURCES
    ${PTH_ROOT_DIR}/pth_compat.c
@@ -69,13 +46,41 @@ set(PTH_SOURCES
 )
 
 ADD_CUSTOM_COMMAND (
-   OUTPUT pth_p.h
+   OUTPUT ${PTH_ROOT_DIR}/pth_p.h
    COMMAND ${PTH_ROOT_DIR}/shtool 
-   ARGS scpp -o pth_p.h -t pth_p.h.in -Dcpp -Cintern -M '==#==' ${PTH_SOURCES}
-   DEPENDS pth_p.h.in ${PTH_SOURCES}
+   ARGS scpp -o ${PTH_ROOT_DIR}/pth_p.h -t ${PTH_ROOT_DIR}/pth_p.h.in -Dcpp -Cintern -M '==#==' ${PTH_SOURCES}
+   DEPENDS ${PTH_ROOT_DIR}/pth_p.h.in ${PTH_SOURCES}
 )
 
-add_bitcode(shadow-plugin-pth-bitcode ${PTH_ROOT_DIR}/pth_p.h ${PTH_SOURCES})
+set_property(SOURCE ${PTH_SOURCES} APPEND PROPERTY OBJECT_DEPENDS ${PTH_ROOT_DIR}/pth_p.h)
+
+
+
+## C Version
+## create and install a shared library that can plug into shadow
+add_bitcode(shadow-plugin-leveldb-sample-bitcode leveldb-sample-plugin.c leveldb-sample.c)
+add_plugin(shadow-plugin-leveldb-sample shadow-plugin-leveldb-sample-bitcode)
+target_link_libraries(shadow-plugin-leveldb-sample ${LEVELDB_LIBS})
+install(TARGETS shadow-plugin-leveldb-sample DESTINATION plugins)
+
+## CPP Version
+## create and install a shared library that can plug into shadow
+add_bitcode(shadow-plugin-leveldb-sample-cpp-bitcode leveldb-sample-plugin.c leveldb-sample-cpp.cpp)
+add_plugin(shadow-plugin-leveldb-sample-cpp shadow-plugin-leveldb-sample-cpp-bitcode)
+target_link_libraries(shadow-plugin-leveldb-sample-cpp ${LEVELDB_LIBS})
+install(TARGETS shadow-plugin-leveldb-sample-cpp DESTINATION plugins)
+
+## Multithread Version
+## create and install a shared library that can plug into shadow
+add_bitcode(shadow-plugin-leveldb-sample-mt-bitcode leveldb-sample-plugin.c leveldb-sample-mt.cpp thread_toy.cpp)
+add_plugin(shadow-plugin-leveldb-sample-mt shadow-plugin-leveldb-sample-mt-bitcode)
+target_link_libraries(shadow-plugin-leveldb-sample-mt ${Boost_LIBRARIES})
+install(TARGETS shadow-plugin-leveldb-sample-mt DESTINATION plugins)
+
+
+
+
+add_bitcode(shadow-plugin-pth-bitcode ${PTH_SOURCES})
 
 ## Pth Version
 ## create and install a shared library that can plug into shadow
@@ -83,7 +88,7 @@ add_bitcode(shadow-plugin-leveldb-sample-pth-bitcode leveldb-sample-plugin.c lev
 add_plugin(shadow-plugin-leveldb-sample-pth 
     shadow-plugin-leveldb-sample-pth-bitcode	
     shadow-plugin-pth-bitcode)
-target_link_libraries(shadow-plugin-leveldb-sample-pth ${Pth_LIBS})
+target_link_libraries(shadow-plugin-leveldb-sample-pth)
 install(TARGETS shadow-plugin-leveldb-sample-pth DESTINATION plugins)
 
 
@@ -91,16 +96,16 @@ add_executable(thread_toy thread_toy.cpp thread_toy_main.cpp)
 target_link_libraries(thread_toy ${Boost_LIBRARIES})
 install(TARGETS thread_toy DESTINATION bin)
 
-add_executable(thread_toy_pth thread_toy_pth.cpp thread_toy_main.cpp)
-target_link_libraries(thread_toy_pth ${Pth_LIBS})
+add_executable(thread_toy_pth thread_toy_pth.cpp thread_toy_main.cpp ${PTH_SOURCES})
+target_link_libraries(thread_toy_pth)
 install(TARGETS thread_toy_pth DESTINATION bin)
 
 add_executable(leveldb-sample-mt leveldb-sample-main.c leveldb-sample-mt.cpp thread_toy.cpp)
 target_link_libraries(leveldb-sample-mt ${Boost_LIBRARIES})
 install(TARGETS leveldb-sample-mt DESTINATION bin)
 
-add_executable(leveldb-sample-pth leveldb-sample-main.c leveldb-sample-pth.cpp thread_toy_pth.cpp)
-target_link_libraries(leveldb-sample-pth ${Pth_LIBS})
+add_executable(leveldb-sample-pth leveldb-sample-main.c leveldb-sample-pth.cpp thread_toy_pth.cpp ${PTH_SOURCES})
+target_link_libraries(leveldb-sample-pth)
 install(TARGETS leveldb-sample-pth DESTINATION bin)
 
 ## create and install an executable that can run outside of shadow
