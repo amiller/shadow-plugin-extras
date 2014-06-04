@@ -33,10 +33,56 @@ target_link_libraries(shadow-plugin-leveldb-sample-mt ${Boost_LIBRARIES})
 install(TARGETS shadow-plugin-leveldb-sample-mt DESTINATION plugins)
 
 
+
+#=============
+# Pth building
+#=============
+
+set(PTH_ROOT_DIR ${CMAKE_SOURCE_DIR}/gnu-pth)
+
+set(PTH_SOURCES
+   ${PTH_ROOT_DIR}/pth_compat.c
+   ${PTH_ROOT_DIR}/pth_debug.c
+   ${PTH_ROOT_DIR}/pth_syscall.c
+   ${PTH_ROOT_DIR}/pth_errno.c
+   ${PTH_ROOT_DIR}/pth_ring.c
+   ${PTH_ROOT_DIR}/pth_mctx.c
+   ${PTH_ROOT_DIR}/pth_uctx.c
+   ${PTH_ROOT_DIR}/pth_clean.c
+   ${PTH_ROOT_DIR}/pth_time.c
+   ${PTH_ROOT_DIR}/pth_tcb.c
+   ${PTH_ROOT_DIR}/pth_util.c
+   ${PTH_ROOT_DIR}/pth_pqueue.c
+   ${PTH_ROOT_DIR}/pth_event.c
+   ${PTH_ROOT_DIR}/pth_sched.c
+   ${PTH_ROOT_DIR}/pth_data.c
+   ${PTH_ROOT_DIR}/pth_msg.c
+   ${PTH_ROOT_DIR}/pth_cancel.c
+   ${PTH_ROOT_DIR}/pth_sync.c
+   ${PTH_ROOT_DIR}/pth_attr.c
+   ${PTH_ROOT_DIR}/pth_lib.c
+   ${PTH_ROOT_DIR}/pth_fork.c
+   ${PTH_ROOT_DIR}/pth_high.c
+   ${PTH_ROOT_DIR}/pth_ext.c
+   ${PTH_ROOT_DIR}/pth_string.c
+#   ${PTH_ROOT_DIR}/pthread.c
+)
+
+ADD_CUSTOM_COMMAND (
+   OUTPUT pth_p.h
+   COMMAND ${PTH_ROOT_DIR}/shtool 
+   ARGS scpp -o pth_p.h -t pth_p.h.in -Dcpp -Cintern -M '==#==' ${PTH_SOURCES}
+   DEPENDS pth_p.h.in ${PTH_SOURCES}
+)
+
+add_bitcode(shadow-plugin-pth-bitcode ${PTH_ROOT_DIR}/pth_p.h ${PTH_SOURCES})
+
 ## Pth Version
 ## create and install a shared library that can plug into shadow
-add_bitcode(shadow-plugin-leveldb-sample-pth-bitcode leveldb-sample-plugin.c leveldb-sample-pth.cpp thread_toy_pth.cpp)
-add_plugin(shadow-plugin-leveldb-sample-pth shadow-plugin-leveldb-sample-pth-bitcode)
+add_bitcode(shadow-plugin-leveldb-sample-pth-bitcode leveldb-sample-plugin.c leveldb-sample-pth.cpp thread_toy_pth.cpp ${})
+add_plugin(shadow-plugin-leveldb-sample-pth 
+    shadow-plugin-leveldb-sample-pth-bitcode	
+    shadow-plugin-pth-bitcode)
 target_link_libraries(shadow-plugin-leveldb-sample-pth ${Pth_LIBS})
 install(TARGETS shadow-plugin-leveldb-sample-pth DESTINATION plugins)
 
@@ -61,3 +107,6 @@ install(TARGETS leveldb-sample-pth DESTINATION bin)
 add_executable(leveldb-sample leveldb-sample-main.c leveldb-sample.c)
 target_link_libraries(leveldb-sample ${LEVELDB_LIBS})
 install(TARGETS leveldb-sample DESTINATION bin)
+
+
+

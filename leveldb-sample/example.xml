@@ -75,9 +75,10 @@
     <node id="helloserver-pth" geocodehint="US">
         <application plugin="leveldb-sample-pth" time="10" arguments="" />
     </node>
+    <!--
     <node id="helloclient-pth" quantity="1">
         <application plugin="leveldb-sample-pth" time="20" arguments="helloserver-pth" />
     </node>
-
+    -->
 
 </shadow>

@@ -31,7 +31,7 @@ extern void doWork(void);
 
 static int *global_ed;
 
-#define HELLO_PORT 12348
+#define HELLO_PORT 12345
 
 /* all state for hello is stored here */
 struct _Hello {
@@ -219,7 +219,7 @@ static int _hello_startServer(Hello* h) {
 
 	/* accept new connection from a remote client */
 	int newClientSD = pth_accept(h->server.sd, NULL, NULL);
-
+	
 	/* now register this new socket so we know when its ready */
 	memset(&ev, 0, sizeof(struct epoll_event));
 	ev.events = EPOLLIN;
@@ -349,10 +349,13 @@ void hello_free(Hello* h) {
 void hello_ready(Hello* h) {
   assert(h);
   pth_yield(NULL);
+  fprintf(stderr, "Master activate\n");
   while (pth_ctrl(PTH_CTRL_GETTHREADS_READY | PTH_CTRL_GETTHREADS_NEW)) {
+    pth_ctrl(PTH_CTRL_DUMPSTATE, stderr);
     pth_attr_set(pth_attr_of(pth_self()), PTH_ATTR_PRIO, PTH_PRIO_MIN);
     pth_yield(NULL);
   }
+  fprintf(stderr, "Master exiting\n");
 }
 
 int hello_getEpollDescriptor(Hello* h) {
