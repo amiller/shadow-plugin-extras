@@ -98,20 +98,6 @@ static int _hello_startClient(Hello* h) {
 		return -1;
 	}
 
-	/* specify the events to watch for on this socket.
-	 * the client wants to know when it can send a hello message. */
-	struct epoll_event ev;
-	ev.events = EPOLLOUT;
-	ev.data.fd = h->client.sd;
-
-	/* start watching the client socket */
-	res = epoll_ctl(h->ed, EPOLL_CTL_ADD, h->client.sd, &ev);
-	if(res == -1) {
-		h->slogf(SHADOW_LOG_LEVEL_CRITICAL, __FUNCTION__,
-				"unable to start client: error in epoll_ctl");
-		return -1;
-	}
-
 	/* to keep things simple, there is explicitly no resilience here.
 	 * we allow only one chance to send the message and one to receive the response.
 	 */
@@ -135,15 +121,6 @@ static int _hello_startClient(Hello* h) {
 		   "unable to send message");
 	}
 
-	/* tell epoll we don't care about writing anymore */
-	{
-	  struct epoll_event ev;
-	  memset(&ev, 0, sizeof(struct epoll_event));
-	  ev.events = EPOLLIN;
-	  ev.data.fd = h->client.sd;
-	  epoll_ctl(h->ed, EPOLL_CTL_MOD, h->client.sd, &ev);
-	}
-
 	/* prepare to accept the message */
 	memset(message, 0, (size_t)10);
 
@@ -158,8 +135,6 @@ static int _hello_startClient(Hello* h) {
 		   "unable to receive message");
 	}
 
-	/* tell epoll we no longer want to watch this socket */
-	epoll_ctl(h->ed, EPOLL_CTL_DEL, h->client.sd, NULL);
 	close(h->client.sd);
 	h->client.sd = 0;
 	h->isDone = 1;
@@ -200,32 +175,12 @@ static int _hello_startServer(Hello* h) {
 		return -1;
 	}
 
-	/* specify the events to watch for on this socket.
-	 * the server wants to know when a client is connecting. */
-	struct epoll_event ev;
-	ev.events = EPOLLIN;
-	ev.data.fd = h->server.sd;
-
-	/* start watching the server socket */
-	res = epoll_ctl(h->ed, EPOLL_CTL_ADD, h->server.sd, &ev);
-	if(res == -1) {
-		h->slogf(SHADOW_LOG_LEVEL_CRITICAL, __FUNCTION__,
-				"unable to start server: error in epoll_ctl");
-		return -1;
-	}
-
 	ssize_t numBytes = 0;
 	char message[10];
 
 	/* accept new connection from a remote client */
 	int newClientSD = pth_accept(h->server.sd, NULL, NULL);
 	
-	/* now register this new socket so we know when its ready */
-	memset(&ev, 0, sizeof(struct epoll_event));
-	ev.events = EPOLLIN;
-	ev.data.fd = newClientSD;
-	epoll_ctl(h->ed, EPOLL_CTL_ADD, newClientSD, &ev);
-
 	/* prepare to accept the message */
 	memset(message, 0, (size_t)10);
 	numBytes = pth_recv(newClientSD, message, (size_t)6, 0);
@@ -236,20 +191,12 @@ static int _hello_startServer(Hello* h) {
 		   "successfully received '%s' message", message);
 	} else if(numBytes == 0){
 	  /* client got response and closed */
-	  /* tell epoll we no longer want to watch this socket */
-	  epoll_ctl(h->ed, EPOLL_CTL_DEL, newClientSD, NULL);
 	  close(newClientSD);
 	  printf("client closed socket\n");
 	} else {
 	  h->slogf(SHADOW_LOG_LEVEL_WARNING, __FUNCTION__,
 		   "unable to receive message");
 	}
-
-	/* tell epoll we want to write the response now */
-	memset(&ev, 0, sizeof(struct epoll_event));
-	ev.events = EPOLLOUT;
-	ev.data.fd = newClientSD;
-	epoll_ctl(h->ed, EPOLL_CTL_MOD, newClientSD, &ev);
 
 	/* prepare the response message */
 	memset(message, 0, (size_t)10);
@@ -267,8 +214,6 @@ static int _hello_startServer(Hello* h) {
 		   "unable to send message");
 	}
 
-	/* tell epoll we no longer want to watch this socket */
-	epoll_ctl(h->ed, EPOLL_CTL_DEL, newClientSD, NULL);
 	close(newClientSD);
 	h->isDone = 1;
 
@@ -348,13 +293,25 @@ void hello_free(Hello* h) {
 
 void hello_ready(Hello* h) {
   assert(h);
+  struct epoll_event ev = {};
+  ev.events = EPOLLOUT | EPOLLIN | EPOLLRDHUP;
+  static int epd = -1;
+  if (epd > -1) {
+    ev.data.fd = epd;
+    epoll_ctl(h->ed, EPOLL_CTL_DEL, epd, &ev);
+    epd = -1;
+  }
   pth_yield(NULL);
   fprintf(stderr, "Master activate\n");
   while (pth_ctrl(PTH_CTRL_GETTHREADS_READY | PTH_CTRL_GETTHREADS_NEW)) {
     pth_ctrl(PTH_CTRL_DUMPSTATE, stderr);
     pth_attr_set(pth_attr_of(pth_self()), PTH_ATTR_PRIO, PTH_PRIO_MIN);
     pth_yield(NULL);
+
   }
+  epd = pth_waiting_epoll();
+  ev.data.fd = epd;
+  epoll_ctl(h->ed, EPOLL_CTL_ADD, epd, &ev);
   fprintf(stderr, "Master exiting\n");
 }
 
