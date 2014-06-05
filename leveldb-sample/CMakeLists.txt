@@ -48,15 +48,8 @@ set(PTH_SOURCES
 ADD_CUSTOM_COMMAND (
    OUTPUT ${PTH_ROOT_DIR}/pth_p.h
    COMMAND ${PTH_ROOT_DIR}/shtool 
-   ARGS scpp -o ${PTH_ROOT_DIR}/pth_p.h -t ${PTH_ROOT_DIR}/pth_p.h.in -Dcpp -Cintern -M '==\#==' ${PTH_SOURCES}
-   DEPENDS ${PTH_ROOT_DIR}/pth_p.h.in ${PTH_SOURCES}
-)
-
-ADD_CUSTOM_COMMAND (
-   OUTPUT ${PTH_ROOT_DIR}/pth.h
-   COMMAND ${PTH_ROOT_DIR}/shtool 
-   ARGS scpp -o ${PTH_ROOT_DIR}/pth_p.h -t ${PTH_ROOT_DIR}/pth_p.h.in -Dcpp -Cintern -M '==\#==' ${PTH_SOURCES}
-   DEPENDS ${PTH_ROOT_DIR}/pth_p.h.in ${PTH_SOURCES}
+   ARGS scpp -o ${PTH_ROOT_DIR}/pth_p.h -t ${PTH_ROOT_DIR}/pth_p.h.in -Dcpp -Cintern -M '==\#==' ${PTH_SOURCES} ${PTH_ROOT_DIR}/pthread.c
+   DEPENDS ${PTH_ROOT_DIR}/pth_p.h.in ${PTH_SOURCES} ${PTH_ROOT_DIR}/pthread.c
 )
 
 set_property(SOURCE ${PTH_SOURCES} APPEND PROPERTY OBJECT_DEPENDS ${PTH_ROOT_DIR}/pth_p.h)
