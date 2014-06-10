@@ -13,6 +13,7 @@
 #include <netdb.h>
 #include <errno.h>
 #include <shd-library.h>
+#include <sys/stat.h>
 
 #include <pth.h>
 
@@ -61,7 +62,7 @@ struct _Hello {
 static const char* USAGE = "USAGE: hello [hello_server_hostname]\n";
 
 static int _hello_startClient(Hello* h) {
-  //h->client.serverHostName = strndup(serverHostname, (size_t)50);
+	//h->client.serverHostName = strndup(serverHostname, (size_t)50);
 
 	/* get the address of the server */
 	struct addrinfo* serverInfo;
@@ -74,7 +75,7 @@ static int _hello_startClient(Hello* h) {
 
 	h->client.serverIP = ((struct sockaddr_in*)(serverInfo->ai_addr))->sin_addr.s_addr;
 	freeaddrinfo(serverInfo);
-
+	
 	/* create the client socket and get a socket descriptor */
 	h->client.sd = socket(AF_INET, (SOCK_STREAM), 0);
 	if(h->client.sd == -1) {
@@ -91,13 +92,17 @@ static int _hello_startClient(Hello* h) {
 	serverAddress.sin_port = htons(HELLO_PORT);
 
 	/* connect to server. since we are non-blocking, we expect this to return EINPROGRESS */
+	struct epoll_event ev = {};
+	ev.events = EPOLLIN;
+	ev.data.fd = h->client.sd;
+	epoll_ctl(h->ed, EPOLL_CTL_ADD, h->client.sd, &ev);
 	res = connect(h->client.sd,(struct sockaddr *)  &serverAddress, sizeof(serverAddress));
 	if (res == -1 && errno != EINPROGRESS) {
 		h->slogf(SHADOW_LOG_LEVEL_CRITICAL, __FUNCTION__,
 				"unable to start client: error in connect");
 		return -1;
 	}
-
+	//return 0;
 	/* to keep things simple, there is explicitly no resilience here.
 	 * we allow only one chance to send the message and one to receive the response.
 	 */
@@ -114,11 +119,11 @@ static int _hello_startClient(Hello* h) {
 
 	/* log result */
 	if(numBytes == 6) {
-	  h->slogf(SHADOW_LOG_LEVEL_MESSAGE, __FUNCTION__,
-		   "successfully sent '%s' message", message);
+		h->slogf(SHADOW_LOG_LEVEL_MESSAGE, __FUNCTION__,
+			 "successfully sent '%s' message", message);
 	} else {
-	  h->slogf(SHADOW_LOG_LEVEL_WARNING, __FUNCTION__,
-		   "unable to send message");
+		h->slogf(SHADOW_LOG_LEVEL_WARNING, __FUNCTION__,
+			 "unable to send message");
 	}
 
 	/* prepare to accept the message */
@@ -128,11 +133,11 @@ static int _hello_startClient(Hello* h) {
 
 	/* log result */
 	if(numBytes > 0) {
-	  h->slogf(SHADOW_LOG_LEVEL_MESSAGE, __FUNCTION__,
-		   "successfully received '%s' message", message);
+		h->slogf(SHADOW_LOG_LEVEL_MESSAGE, __FUNCTION__,
+			 "successfully received '%s' message", message);
 	} else {
-	  h->slogf(SHADOW_LOG_LEVEL_WARNING, __FUNCTION__,
-		   "unable to receive message");
+		h->slogf(SHADOW_LOG_LEVEL_WARNING, __FUNCTION__,
+			 "unable to receive message");
 	}
 
 	close(h->client.sd);
@@ -146,6 +151,7 @@ static int _hello_startClient(Hello* h) {
 static int _hello_startServer(Hello* h) {
 	/* create the socket and get a socket descriptor */
 	h->server.sd = socket(AF_INET, (SOCK_STREAM), 0);
+
 	if (h->server.sd == -1) {
 		h->slogf(SHADOW_LOG_LEVEL_CRITICAL, __FUNCTION__,
 				"unable to start server: error in socket");
@@ -174,13 +180,17 @@ static int _hello_startServer(Hello* h) {
 				"unable to start server: error in listen");
 		return -1;
 	}
-
+	
 	ssize_t numBytes = 0;
 	char message[10];
 
 	/* accept new connection from a remote client */
+	struct epoll_event ev = {};
+	ev.events = EPOLLIN;
+	ev.data.fd = h->server.sd;
+	epoll_ctl(h->ed, EPOLL_CTL_ADD, h->server.sd, &ev);
 	int newClientSD = pth_accept(h->server.sd, NULL, NULL);
-	
+	//return 0;
 	/* prepare to accept the message */
 	memset(message, 0, (size_t)10);
 	numBytes = pth_recv(newClientSD, message, (size_t)6, 0);
@@ -253,6 +263,7 @@ Hello* hello_new(int argc, char* argv[], ShadowLogFunc slogf) {
 	// Both Client and Server will run the threading exercise
 	slogf(SHADOW_LOG_LEVEL_CRITICAL, __FUNCTION__, "Starting threads");
 	pth_init();
+	pth_yield(NULL);
 
 
 	/* extract the server hostname from argv if in client mode */
@@ -292,27 +303,28 @@ void hello_free(Hello* h) {
 }
 
 void hello_ready(Hello* h) {
-  assert(h);
-  struct epoll_event ev = {};
-  ev.events = EPOLLOUT | EPOLLIN | EPOLLRDHUP;
-  static int epd = -1;
-  if (epd > -1) {
-    ev.data.fd = epd;
-    epoll_ctl(h->ed, EPOLL_CTL_DEL, epd, &ev);
-    epd = -1;
-  }
-  pth_yield(NULL);
-  fprintf(stderr, "Master activate\n");
-  while (pth_ctrl(PTH_CTRL_GETTHREADS_READY | PTH_CTRL_GETTHREADS_NEW)) {
-    pth_ctrl(PTH_CTRL_DUMPSTATE, stderr);
-    pth_attr_set(pth_attr_of(pth_self()), PTH_ATTR_PRIO, PTH_PRIO_MIN);
-    pth_yield(NULL);
-
-  }
-  epd = pth_waiting_epoll();
-  ev.data.fd = epd;
-  epoll_ctl(h->ed, EPOLL_CTL_ADD, epd, &ev);
-  fprintf(stderr, "Master exiting\n");
+	assert(h);
+	static int epd = -1;
+	struct epoll_event ev = {};
+	ev.events = EPOLLOUT | EPOLLIN | EPOLLRDHUP;
+	/*
+	if (epd > -1) {
+		ev.data.fd = epd;
+		epoll_ctl(h->ed, EPOLL_CTL_DEL, epd, &ev);
+		epd = -1;
+		}*/
+	pth_yield(NULL);
+	return;
+	fprintf(stderr, "Master activate\n");
+	while (pth_ctrl(PTH_CTRL_GETTHREADS_READY | PTH_CTRL_GETTHREADS_NEW)) {
+		pth_ctrl(PTH_CTRL_DUMPSTATE, stderr);
+		pth_attr_set(pth_attr_of(pth_self()), PTH_ATTR_PRIO, PTH_PRIO_MIN);
+		pth_yield(NULL);
+	}
+	//epd = pth_waiting_epoll();
+	//ev.data.fd = epd;
+	//epoll_ctl(h->ed, EPOLL_CTL_ADD, epd, &ev);
+	fprintf(stderr, "Master exiting\n");
 }
 
 int hello_getEpollDescriptor(Hello* h) {

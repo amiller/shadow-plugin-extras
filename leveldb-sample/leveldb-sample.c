@@ -185,7 +185,7 @@ Hello* hello_new(int argc, char* argv[], ShadowLogFunc slogf) {
 
 	/******************************************/
 	/* OPEN */
-
+	/*
 	options = leveldb_options_create();
 	leveldb_options_set_create_if_missing(options, 1);
 	const char *dbname = getDefaultDataDir();
@@ -198,7 +198,7 @@ Hello* hello_new(int argc, char* argv[], ShadowLogFunc slogf) {
 		"Couldn't open db");
 	  hello_free(h);
 	  return NULL;
-	}
+	  }*/
 	/******** END LEVELDB **********/
 
 
