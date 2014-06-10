@@ -53,7 +53,7 @@ int main(int argc, char *argv[]) {
 	int nReadyFDs;
 	mylog("entering main loop to watch descriptors");
 
-	while(1) {
+	while(!hello_isDone(helloState)) {
 		/* wait for some events */
 		mylog("waiting for events");
 		nReadyFDs = epoll_wait(mainepolld, events, 100, -1);
@@ -66,11 +66,6 @@ int main(int argc, char *argv[]) {
 		mylog("processing event");
 		if(nReadyFDs > 0) {
 			hello_ready(helloState);
-		}
-
-		/* break out if hello is done */
-		if(hello_isDone(helloState)) {
-			break;
 		}
 	}
 
