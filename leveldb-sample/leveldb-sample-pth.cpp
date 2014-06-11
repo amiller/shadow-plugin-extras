@@ -16,6 +16,7 @@
 #include <sys/stat.h>
 
 #include <pth.h>
+#include <pth_p.h>
 
 typedef struct _Hello Hello;
 
@@ -32,7 +33,7 @@ extern void doWork(void);
 
 static int *global_ed;
 
-#define HELLO_PORT 12345
+#define HELLO_PORT 12346
 
 /* all state for hello is stored here */
 struct _Hello {
@@ -92,10 +93,6 @@ static int _hello_startClient(Hello* h) {
 	serverAddress.sin_port = htons(HELLO_PORT);
 
 	/* connect to server. since we are non-blocking, we expect this to return EINPROGRESS */
-	struct epoll_event ev = {};
-	ev.events = EPOLLIN;
-	ev.data.fd = h->client.sd;
-	//epoll_ctl(h->ed, EPOLL_CTL_ADD, h->client.sd, &ev);
 	res = connect(h->client.sd,(struct sockaddr *)  &serverAddress, sizeof(serverAddress));
 	if (res == -1 && errno != EINPROGRESS) {
 		h->slogf(SHADOW_LOG_LEVEL_CRITICAL, __FUNCTION__,
@@ -113,6 +110,9 @@ static int _hello_startClient(Hello* h) {
 	/* prepare the message */
 	memset(message, 0, (size_t)10);
 	snprintf(message, 10, "%s", "Hello?");
+
+	/* sleep for 3 seconds, just be ornery */
+	pth_sleep(3);
 	
 	/* send the message */
 	numBytes = pth_send(h->client.sd, message, (size_t)6, 0);
@@ -186,10 +186,6 @@ static int _hello_startServer(Hello* h) {
 	char message[10];
 
 	/* accept new connection from a remote client */
-	struct epoll_event ev = {};
-	ev.events = EPOLLIN;
-	ev.data.fd = h->server.sd;
-	//epoll_ctl(h->ed, EPOLL_CTL_ADD, h->server.sd, &ev);
 	int newClientSD = pth_accept(h->server.sd, NULL, NULL);
 
 	/* prepare to accept the message */
@@ -279,9 +275,6 @@ Hello* hello_new(int argc, char* argv[], ShadowLogFunc slogf) {
 	  pth_spawn(PTH_ATTR_DEFAULT, (void * (*) (void *)) _hello_startServer, h);
 	}
 
-	// Jog the threads once
-	hello_ready(h);
-
 	if(isFail) {
 		hello_free(h);
 		return NULL;
@@ -304,33 +297,6 @@ void hello_free(Hello* h) {
 }
 
 void hello_ready(Hello* h) {
-	assert(h);
-	static int epd = -1;
-	struct epoll_event ev = {};
-	if (epd > -1) {
-		int rc = epoll_wait(epd, &ev, 1, 0);
-		printf("epoll check %d returned %d\n", epd, rc);
-		rc = epoll_wait(h->ed, &ev, 1, 0);
-		printf("epoll check %d returned %d\n", h->ed, rc);
-		epoll_ctl(h->ed, EPOLL_CTL_DEL, epd, NULL);
-		epd = -1;
-	}
-	ev.events = EPOLLOUT | EPOLLIN | EPOLLRDHUP;
-	pth_yield(NULL);
-	fprintf(stderr, "Master activate\n");
-	pth_ctrl(PTH_CTRL_DUMPSTATE, stderr);
-	while (pth_ctrl(PTH_CTRL_GETTHREADS_READY | PTH_CTRL_GETTHREADS_NEW)) {
-		pth_ctrl(PTH_CTRL_DUMPSTATE, stderr);
-		pth_attr_set(pth_attr_of(pth_self()), PTH_ATTR_PRIO, PTH_PRIO_MIN);
-		pth_yield(NULL);
-	}
-	epd = pth_waiting_epoll();
-	if (epd > -1) {
-		ev.data.fd = epd;
-		printf("Interested in %d, adding it to master:%d\n", epd, h->ed);
-		epoll_ctl(h->ed, EPOLL_CTL_ADD, epd, &ev);
-	}
-	fprintf(stderr, "Master exiting (isDone:%d)\n", h->isDone);
 }
 
 int hello_getEpollDescriptor(Hello* h) {
@@ -340,5 +306,6 @@ int hello_getEpollDescriptor(Hello* h) {
 
 int hello_isDone(Hello* h) {
 	assert(h);
+	printf("hello_isDone:%d\n", h->isDone);
 	return h->isDone;
 }
