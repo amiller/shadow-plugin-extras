@@ -42,7 +42,7 @@ set(PTH_SOURCES
    ${PTH_ROOT_DIR}/pth_high.c
    ${PTH_ROOT_DIR}/pth_ext.c
    ${PTH_ROOT_DIR}/pth_string.c
-#   ${PTH_ROOT_DIR}/pthread.c
+   ${PTH_ROOT_DIR}/pthread.c
 )
 
 ADD_CUSTOM_COMMAND (
@@ -53,7 +53,7 @@ ADD_CUSTOM_COMMAND (
 )
 ADD_CUSTOM_TARGET(generate_pth DEPENDS ${PTH_ROOT_DIR}/pth_p.h)
 
-#set_property(SOURCE ${PTH_SOURCES} APPEND PROPERTY OBJECT_DEPENDS generate_pth)
+#set_property(SOURCE ${PTH_SOURCES} APPEND PROPERTY OBJECT_DEPENDS pth_p.h)
 
 
 
@@ -85,29 +85,29 @@ add_bitcode(shadow-plugin-pth-bitcode ${PTH_SOURCES})
 
 ## Pth Version
 ## create and install a shared library that can plug into shadow
-add_bitcode(shadow-plugin-leveldb-sample-pth-bitcode leveldb-sample-plugin-pth.c leveldb-sample-pth.cpp thread_toy_pth.cpp ${})
-add_plugin(shadow-plugin-leveldb-sample-pth 
-    shadow-plugin-leveldb-sample-pth-bitcode
-    shadow-plugin-pth-bitcode)
-target_link_libraries(shadow-plugin-leveldb-sample-pth)
-install(TARGETS shadow-plugin-leveldb-sample-pth DESTINATION plugins)
+#add_bitcode(shadow-plugin-leveldb-sample-pth-bitcode leveldb-sample-plugin-pth.c leveldb-sample-pth.cpp thread_toy_#pth.cpp ${})
+#add_plugin(shadow-plugin-leveldb-sample-pth 
+#    shadow-plugin-leveldb-sample-pth-bitcode
+#    shadow-plugin-pth-bitcode)
+#target_link_libraries(shadow-plugin-leveldb-sample-pth)
+#install(TARGETS shadow-plugin-leveldb-sample-pth DESTINATION plugins)
 
 
 add_executable(thread_toy thread_toy.cpp thread_toy_main.cpp)
 target_link_libraries(thread_toy ${Boost_LIBRARIES})
 install(TARGETS thread_toy DESTINATION bin)
 
-add_executable(thread_toy_pth thread_toy_pth.cpp thread_toy_main.cpp ${PTH_SOURCES})
-target_link_libraries(thread_toy_pth)
-install(TARGETS thread_toy_pth DESTINATION bin)
+#add_executable(thread_toy_pth thread_toy_pth.cpp thread_toy_main.cpp ${PTH_SOURCES})
+#target_link_libraries(thread_toy_pth)
+#install(TARGETS thread_toy_pth DESTINATION bin)
 
 add_executable(leveldb-sample-mt leveldb-sample-main.c leveldb-sample-mt.cpp thread_toy.cpp)
 target_link_libraries(leveldb-sample-mt ${Boost_LIBRARIES})
 install(TARGETS leveldb-sample-mt DESTINATION bin)
 
-add_executable(leveldb-sample-pth leveldb-sample-main-pth.c leveldb-sample-pth.cpp thread_toy_pth.cpp ${PTH_SOURCES})
-target_link_libraries(leveldb-sample-pth)
-install(TARGETS leveldb-sample-pth DESTINATION bin)
+#add_executable(leveldb-sample-pth leveldb-sample-main-pth.c leveldb-sample-pth.cpp thread_toy_pth.cpp ${PTH_SOURCES})
+#target_link_libraries(leveldb-sample-pth)
+#install(TARGETS leveldb-sample-pth DESTINATION bin)
 
 ## create and install an executable that can run outside of shadow
 add_executable(leveldb-sample leveldb-sample-main.c leveldb-sample.c)
@@ -115,4 +115,16 @@ target_link_libraries(leveldb-sample ${LEVELDB_LIBS})
 install(TARGETS leveldb-sample DESTINATION bin)
 
 
+## Yank version
 
+add_bitcode(shadow-plugin-leveldb-sample-yank-bitcode leveldb-sample-plugin-yank.c leveldb-sample-yank.cpp thread_toy.cpp)
+add_plugin(shadow-plugin-leveldb-sample-yank
+    shadow-plugin-leveldb-sample-yank-bitcode
+    shadow-plugin-pth-bitcode)
+target_link_libraries(shadow-plugin-leveldb-sample-yank ${Boost_LIBRARIES})
+install(TARGETS shadow-plugin-leveldb-sample-yank DESTINATION plugins)
+
+## preload library for intercepting functions
+add_library(shadow-preload-yank SHARED leveldb-sample-yank-preload.c)
+target_link_libraries(shadow-preload-yank ${GLIB_LIBRARIES} ${DL_LIBRARIES})
+install(TARGETS shadow-preload-yank DESTINATION lib)

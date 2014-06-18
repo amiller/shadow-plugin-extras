@@ -16,7 +16,18 @@
 #include <netdb.h>
 #include <errno.h>
 
+#include <glib.h>
+#include <gmodule.h>
+
 #include <shd-library.h>
+
+typedef enum _ExecutionContext ExecutionContext;
+enum _ExecutionContext {
+    EXECTX_NONE, EXECTX_BITCOIN, EXECTX_PTH, EXECTX_SHADOW,
+};
+
+void leveldbpreload_init(GModule* handle);
+void leveldbpreload_setContext(ExecutionContext ctx);
 
 typedef struct _Hello Hello;
 
