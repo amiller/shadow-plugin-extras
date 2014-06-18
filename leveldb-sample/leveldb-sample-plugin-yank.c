@@ -113,6 +113,16 @@ static void leveldbplugin_ready() {
 /* shadow is creating a new instance of this plug-in as a node in
  * the simulation. argc and argv are as configured via the XML.
  */
+struct args_t {int argc; char **argv; ShadowLogFunc slogf;};
+
+void _hello_new(struct args_t *args) {
+	assert(args);
+	int argc = args->argc;
+	char **argv = args->argv;
+	ShadowLogFunc slogf = args->slogf;
+	hello_new(argc, argv, slogf);
+}
+
 static void leveldbplugin_new(int argc, char* argv[]) {
 	/* shadow wants to create a new node. pass this to the lower level
 	 * plug-in function that implements this for both plug-in and non-plug-in modes.
@@ -126,7 +136,9 @@ static void leveldbplugin_new(int argc, char* argv[]) {
 	//leveldbpreload_setContext(EXECTX_PTH);
 	pth_init();
 
-	helloNodeInstance = hello_new(argc, argv, shadowlib.log);
+	//helloNodeInstance = hello_new(argc, argv, shadowlib.log);
+	struct args_t args = {argc, argv, shadowlib.log};
+	pth_t t = pth_spawn(PTH_ATTR_DEFAULT, &_hello_new, &args);
 
 	leveldbpreload_setContext(EXECTX_BITCOIN);
 

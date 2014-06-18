@@ -50,6 +50,7 @@ typedef ssize_t (*sendto_fp)(int, const void *, size_t, int, const struct sockad
 /* pth */
 
 typedef pth_t (*pth_spawn_fp)(pth_attr_t attr, void *(*func)(void *), void *arg);
+typedef pth_t (*pth_join_fp)(pth_t thread, void **retval);
 
 /* pthread */
 
@@ -87,9 +88,12 @@ typedef struct _FunctionTable FunctionTable;
 struct _FunctionTable {
 	read_fp read;
 	write_fp write;
+	usleep_fp usleep;
 	
 	read_fp pth_read;
 	write_fp pth_write;
+	usleep_fp pth_usleep;
+	pth_join_fp pth_join;
 	pth_spawn_fp pth_spawn;
 	
 	pthread_create_fp pthread_create;
@@ -186,9 +190,9 @@ typedef ssize_t (*sendto_fp)(int, const void *, size_t, int, const struct sockad
 	worker->activeContext = e;\
 	return rc;}
 
+int shd_dl_usleep(unsigned int usec) _SHD_DL_BODY(usleep,usec);
 /*
 int shd_dl_nanosleep(const struct timespec *rqtp, struct timespec *rmtp) _SHD_DL_BODY(nanosleep, rqtp, rmtp);
-int shd_dl_usleep(unsigned int usec) _SHD_DL_BODY(usleep,usec);
 int shd_dl_sleep(unsigned int sec) _SHD_DL_BODY(sleep,sec);
 int shd_dl_system(const char *cmd) _SHD_DL_BODY(system,cmd);
 int shd_dl_sigprocmask(int how, const sigset_t *set, sigset_t *oset) _SHD_DL_BODY(sigprocmask, how, set, oset);
@@ -242,13 +246,15 @@ void leveldbpreload_init(GModule* handle) {
 	g_assert(g_module_symbol(handle, "pth_read", (gpointer*)&worker->ftable.pth_read));
 	g_assert(g_module_symbol(handle, "pth_write", (gpointer*)&worker->ftable.pth_write));
 	g_assert(g_module_symbol(handle, "pth_spawn", (gpointer*)&worker->ftable.pth_spawn));
+	g_assert(g_module_symbol(handle, "pth_usleep", (gpointer*)&worker->ftable.pth_usleep));
+	g_assert(g_module_symbol(handle, "pth_join", (gpointer*)&worker->ftable.pth_join));
 
 	/* lookup system and pthread calls that exist outside of the plug-in module.
 	 * do the lookup here and save to pointer so we dont have to redo the
 	 * lookup on every syscall */
 	SETSYM_OR_FAIL(worker->ftable.read, "read");
 	SETSYM_OR_FAIL(worker->ftable.write, "write");
-	SETSYM_OR_FAIL(worker->ftable.read, "read");
+	SETSYM_OR_FAIL(worker->ftable.usleep, "usleep");
 	SETSYM_OR_FAIL(worker->ftable.write, "write");
 
 	/*
@@ -318,14 +324,6 @@ ssize_t write(int fp, const void *d, size_t s) {
 ssize_t read(int fp, void *d, size_t s) {
 	LeveldbPreloadWorker* worker = g_private_get(&leveldbWorkerKey);
 	ssize_t rc = 0;
-	real_fprintf(stderr, "read skipping worker\n");
-	read_fp read;
-	SETSYM_OR_FAIL(read, "read");
-	rc = read(fp, d, s);
-	return rc;
-
-
-	real_fprintf(stderr, "read\n");
 	if(worker && worker->activeContext == EXECTX_BITCOIN) {
 		real_fprintf(stderr, "going to pth\n");
 		worker->activeContext = EXECTX_PTH;
@@ -336,45 +334,84 @@ ssize_t read(int fp, void *d, size_t s) {
 		// dont mess with shadow's calls, and dont change context 
 		rc = worker->ftable.read(fp, d, s);
 	} else {
+		read_fp read;
+		SETSYM_OR_FAIL(read, "read");
+		rc = read(fp, d, s);
 	}
 	
 	return rc;
 }
 
+#define _FTABLE_GUARD(func, ...) \
+    LeveldbPreloadWorker* worker = g_private_get(&leveldbWorkerKey);\
+    if (!worker) {\
+	    func##_fp real;\
+	    SETSYM_OR_FAIL(real, #func);\
+	    return real(__VA_ARGS__);\
+    }\
+    if (worker->activeContext != EXECTX_BITCOIN) {\
+	    return worker->ftable.func(__VA_ARGS__);\
+    }
+
+int usleep(unsigned int usec) {
+	{
+		LeveldbPreloadWorker* worker = g_private_get(&leveldbWorkerKey);
+		if (worker)
+			real_fprintf(stderr, "in usleep; context:%d (btc:%d)\n", worker->activeContext, EXECTX_BITCOIN);
+	}
+	_FTABLE_GUARD(usleep, usec);
+	worker->activeContext = EXECTX_PTH;
+	//usleep(usec);
+	real_fprintf(stderr, "about to pth_sleep\n");
+	int rc = worker->ftable.pth_usleep(usec);
+	worker->activeContext = EXECTX_BITCOIN;
+	return rc;
+}
+
+
 /**
  * pthreads
  */
-/*
+
 int pthread_create(pthread_t *thread, const pthread_attr_t *attr,
                           void *(*start_routine) (void *), void *arg) {
-    LeveldbPreloadWorker* worker = g_private_get(&leveldbWorkerKey);
-    int rc = 0;
-
-    if(worker->activeContext == EXECTX_BITCOIN) {
-        worker->activeContext = EXECTX_PTH;
-        pth_attr_t na;
-
-        if (thread == NULL || start_routine == NULL) {
-            errno = EINVAL;
-            rc = EINVAL;
-        } else {
-            na = (attr != NULL) ? *((pth_attr_t*)attr) : PTH_ATTR_DEFAULT;
-
-            *thread = (pthread_t)worker->ftable.pth_spawn(na, start_routine, arg);
-            if (thread == NULL) {
-                errno = EAGAIN;
-                rc = EAGAIN;
-            }
-        }
-
-        worker->activeContext = EXECTX_BITCOIN;
-    } else {
-        rc = worker->ftable.pthread_create(thread, attr, start_routine, arg);
-    }
-
-    return rc;
+	real_fprintf(stderr, "pthread_entered\n");
+	_FTABLE_GUARD(pthread_create, thread, attr, start_routine, arg);
+	real_fprintf(stderr, "passing to pth_pthread_create\n");
+	pth_attr_t na;
+	int rc;
+	
+	if (thread == NULL || start_routine == NULL) {
+		errno = EINVAL;
+		rc = EINVAL;
+	} else {
+		na = (attr != NULL) ? *((pth_attr_t*)attr) : PTH_ATTR_DEFAULT;
+		
+		*thread = (pthread_t)worker->ftable.pth_spawn(na, start_routine, arg);
+		if (thread == NULL) {
+			errno = EAGAIN;
+			rc = EAGAIN;
+		}
+	}
+	
+	worker->activeContext = EXECTX_BITCOIN;
+	return rc;
 }
 
+int pthread_join(pthread_t thread, void **retval) {
+	_FTABLE_GUARD(pthread_join, thread, retval);
+	int rc;
+        if (!worker->ftable.pth_join((pth_t)thread, retval)) {
+		rc = errno;
+        } else if(retval != NULL && *retval == PTH_CANCELED) {
+		*retval = PTHREAD_CANCELED;
+        }
+	
+        worker->activeContext = EXECTX_BITCOIN;
+	return rc;
+}
+
+/*
 int pthread_detach(pthread_t thread) {
     LeveldbPreloadWorker* worker = g_private_get(&leveldbWorkerKey);
     int rc = 0;
@@ -396,27 +433,6 @@ int pthread_detach(pthread_t thread) {
         worker->activeContext = EXECTX_BITCOIN;
     } else {
         rc = worker->ftable.pthread_detach(thread);
-    }
-
-    return rc;
-}
-
-int pthread_join(pthread_t thread, void **retval) {
-    LeveldbPreloadWorker* worker = g_private_get(&leveldbWorkerKey);
-    int rc = 0;
-
-    if(worker->activeContext == EXECTX_BITCOIN) {
-        worker->activeContext = EXECTX_PTH;
-
-        if (!pth_join((pth_t)thread, retval)) {
-            rc = errno;
-        } else if(retval != NULL && *retval == PTH_CANCELED) {
-            *retval = PTHREAD_CANCELED;
-        }
-
-        worker->activeContext = EXECTX_BITCOIN;
-    } else {
-        rc = worker->ftable.pthread_join(thread, retval);
     }
 
     return rc;

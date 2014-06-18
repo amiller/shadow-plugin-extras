@@ -14,6 +14,7 @@
 #include <errno.h>
 #include <shd-library.h>
 #include <sys/stat.h>
+#include <pthread.h>
 
 typedef struct _Hello Hello;
 
@@ -53,10 +54,23 @@ struct _Hello {
 /* if option is specified, run as client, else run as server */
 static const char* USAGE = "USAGE: hello [hello_server_hostname]\n";
 
+#define ERR(str) write(fileno(stderr), str, sizeof(str))
+
+void *doNothing(void *) { 
+	ERR("sleeping\n");
+	usleep(5000000);
+	ERR("sleeping done\n");
+	return 0;
+}
+
 static int _hello_startClient(Hello* h) {
 	//h->client.serverHostName = strndup(serverHostname, (size_t)50);
 
 	write(2, "doing work\n", 12);
+	pthread_t thread;
+	pthread_create(&thread, NULL, &doNothing, NULL);
+	void *result;
+	pthread_join(thread, NULL);
 	//doWork();
 	write(2, "done\n", 6);
 	return 0;
@@ -241,7 +255,7 @@ void hello_free(Hello* h) {
 	free(h);
 }
 
-void hello_new(int argc, char* argv[], ShadowLogFunc slogf) {
+void hello_new(int argc, char *argv[], ShadowLogFunc slogf) {
 	assert(slogf);
 
 	if(argc < 1 || argc > 2) {
