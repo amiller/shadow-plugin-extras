@@ -14,13 +14,15 @@
 #include <stdlib.h>
 #include <execinfo.h>
 #include <sys/socket.h>
+#include <sys/poll.h>
+
 #include <glib.h>
 #include <gmodule.h>
-#include <sys/poll.h>
 
 #include "leveldb-sample.h"
 
-#include <pth.h>
+#include "pth.h"
+
 
 //#define BITCOIND_LIB_PREFIX "intercept_"
 
@@ -51,6 +53,10 @@ typedef ssize_t (*sendto_fp)(int, const void *, size_t, int, const struct sockad
 
 typedef pth_t (*pth_spawn_fp)(pth_attr_t attr, void *(*func)(void *), void *arg);
 typedef pth_t (*pth_join_fp)(pth_t thread, void **retval);
+typedef int (*pth_mutex_init_fp)(pth_mutex_t *);
+typedef int (*pth_mutex_acquire_fp)(pth_mutex_t *, int, pth_event_t);
+typedef int (*pth_mutex_release_fp)(pth_mutex_t *);
+
 
 /* pthread */
 
@@ -62,10 +68,10 @@ typedef int (*pthread_once_fp)(pthread_once_t*, void (*init_routine)(void));
 typedef int (*pthread_key_create_fp)(pthread_key_t*, void (*destructor)(void*));
 typedef int (*pthread_setspecific_fp)(pthread_key_t, const void*);
 typedef void* (*pthread_getspecific_fp)(pthread_key_t);
-typedef int (*pthread_attr_setdetashstate_fp)(pthread_attr_t*, int);
+typedef int (*pthread_attr_setdetachstate_fp)(pthread_attr_t*, int);
 typedef int (*pthread_attr_getdetachstate_fp)(const pthread_attr_t*, int*);
-typedef int (*pthread_cond_init_fp)(pthread_cond_t*,
-              const pthread_condattr_t*);
+typedef int (*pthread_cond_init_fp)(pthread_cond_t*, const pthread_condattr_t*);
+typedef int (*__pthread_cond_init_2_0_fp)(pthread_cond_t*, const pthread_condattr_t*);
 typedef int (*pthread_cond_destroy_fp)(pthread_cond_t*);
 typedef int (*pthread_cond_signal_fp)(pthread_cond_t*);
 typedef int (*pthread_cond_broadcast_fp)(pthread_cond_t*);
@@ -82,7 +88,13 @@ typedef int (*pthread_mutex_unlock_fp)(pthread_mutex_t*);
 /* the key used to store each threads version of their searched function library.
  * the use this key to retrieve this library when intercepting functions from tor.
  */
+//static __thread void * leveldbWorkerKey = NULL;
 static GPrivate leveldbWorkerKey = G_PRIVATE_INIT(g_free);
+
+/* track if we are in a recursive loop to avoid infinite recursion.
+ * threads MUST access this via &isRecursive to ensure each has its own copy
+ * http://gcc.gnu.org/onlinedocs/gcc-4.3.6/gcc/Thread_002dLocal.html */
+static __thread unsigned long isRecursive = 0;
 
 typedef struct _FunctionTable FunctionTable;
 struct _FunctionTable {
@@ -93,8 +105,13 @@ struct _FunctionTable {
 	read_fp pth_read;
 	write_fp pth_write;
 	usleep_fp pth_usleep;
+
 	pth_join_fp pth_join;
 	pth_spawn_fp pth_spawn;
+	pth_mutex_init_fp pth_mutex_init;
+	pth_mutex_acquire_fp pth_mutex_acquire;
+	pth_mutex_release_fp pth_mutex_release;
+	
 	
 	pthread_create_fp pthread_create;
 	pthread_detach_fp pthread_detach;
@@ -103,7 +120,7 @@ struct _FunctionTable {
 	pthread_key_create_fp pthread_key_create;
 	pthread_setspecific_fp pthread_setspecific;
 	pthread_getspecific_fp pthread_getspecific;
-	pthread_attr_setdetashstate_fp pthread_attr_setdetashstate;
+	pthread_attr_setdetachstate_fp pthread_attr_setdetachstate;
 	pthread_attr_getdetachstate_fp pthread_attr_getdetachstate;
 	pthread_cond_init_fp pthread_cond_init;
 	pthread_cond_destroy_fp pthread_cond_destroy;
@@ -149,8 +166,20 @@ struct _LeveldbPreloadWorker {
 		exit(EXIT_FAILURE); \
 	} \
 }
-
+#define SETSYM_OR_FAIL_V_(handle,funcptr, funcstr, version) {	\
+	dlerror(); \
+	funcptr = dlvsym(handle, funcstr, version);	\
+	char* errorMessage = dlerror(); \
+	if(errorMessage != NULL) { \
+		fprintf(stderr, "dlvsym(%s,%s): dlerror(): %s\n", funcstr, version, errorMessage); \
+		exit(EXIT_FAILURE); \
+	} else if(funcptr == NULL) { \
+		fprintf(stderr, "dlvsym(%s,%s): returned NULL pointer\n", funcstr, version); \
+		exit(EXIT_FAILURE); \
+	} \
+}
 #define SETSYM_OR_FAIL(funcptr, funcstr) SETSYM_OR_FAIL_(RTLD_NEXT, funcptr, funcstr)
+#define SETSYM_OR_FAIL_V(funcptr, funcstr, version) SETSYM_OR_FAIL_V_(RTLD_NEXT, funcptr, funcstr, version)
 #define SETSYM_OR_FAIL_DEFAULT(funcptr, funcstr) SETSYM_OR_FAIL_(RTLD_DEFAULT, funcptr, funcstr)
 
 int shd_dl_sigprocmask(int how, const sigset_t *set, sigset_t *oset) {
@@ -257,17 +286,16 @@ void leveldbpreload_init(GModule* handle) {
 	SETSYM_OR_FAIL(worker->ftable.usleep, "usleep");
 	SETSYM_OR_FAIL(worker->ftable.write, "write");
 
-	/*
+	SETSYM_OR_FAIL(worker->ftable.pthread_key_create, "pthread_key_create");
+	SETSYM_OR_FAIL(worker->ftable.pthread_cond_init, "pthread_cond_init");
 	SETSYM_OR_FAIL(worker->ftable.pthread_create, "pthread_create");
 	SETSYM_OR_FAIL(worker->ftable.pthread_detach, "pthread_detach");
 	SETSYM_OR_FAIL(worker->ftable.pthread_join, "pthread_join");
 	SETSYM_OR_FAIL(worker->ftable.pthread_once, "pthread_once");
-	SETSYM_OR_FAIL(worker->ftable.pthread_key_create, "pthread_key_create");
 	SETSYM_OR_FAIL(worker->ftable.pthread_setspecific, "pthread_setspecific");
 	SETSYM_OR_FAIL(worker->ftable.pthread_getspecific, "pthread_getspecific");
-	SETSYM_OR_FAIL(worker->ftable.pthread_attr_setdetashstate, "pthread_attr_setdetashstate");
+	SETSYM_OR_FAIL(worker->ftable.pthread_attr_setdetachstate, "pthread_attr_setdetachstate");
 	SETSYM_OR_FAIL(worker->ftable.pthread_attr_getdetachstate, "pthread_attr_getdetachstate");
-	SETSYM_OR_FAIL(worker->ftable.pthread_cond_init, "pthread_cond_init");
 	SETSYM_OR_FAIL(worker->ftable.pthread_cond_destroy, "pthread_cond_destroy");
 	SETSYM_OR_FAIL(worker->ftable.pthread_cond_signal, "pthread_cond_signal");
 	SETSYM_OR_FAIL(worker->ftable.pthread_cond_broadcast, "pthread_cond_broadcast");
@@ -278,16 +306,18 @@ void leveldbpreload_init(GModule* handle) {
 	SETSYM_OR_FAIL(worker->ftable.pthread_mutex_lock, "pthread_mutex_lock");
 	SETSYM_OR_FAIL(worker->ftable.pthread_mutex_trylock, "pthread_mutex_trylock");
 	SETSYM_OR_FAIL(worker->ftable.pthread_mutex_unlock, "pthread_mutex_unlock");
-	*/
 
 	g_private_set(&leveldbWorkerKey, worker);
 	assert(g_private_get(&leveldbWorkerKey));
+	//leveldbWorkerKey = &worker;
 
 	assert(sizeof(pthread_t) >= sizeof(pth_t));
 	assert(sizeof(pthread_attr_t) >= sizeof(pth_attr_t));
+	assert(sizeof(pthread_mutex_t) >= sizeof(pth_mutex_t));
+	assert(sizeof(pthread_cond_t) >= sizeof(pth_cond_t));
 }
 
-
+//#define g_private_get(ptr) (*(ptr))
 void leveldbpreload_setContext(ExecutionContext ctx) {
 	//real_fprintf(stderr, "context2\n");
 	LeveldbPreloadWorker* worker = g_private_get(&leveldbWorkerKey);
@@ -343,15 +373,50 @@ ssize_t read(int fp, void *d, size_t s) {
 }
 
 #define _FTABLE_GUARD(func, ...) \
+    if(__sync_fetch_and_add(&isRecursive, 1)) {\
+	    func##_fp real;\
+	    SETSYM_OR_FAIL(real, #func);\
+	    int rc = real(__VA_ARGS__);\
+	    __sync_fetch_and_sub(&isRecursive, 1);\
+            return rc;\
+    }\
     LeveldbPreloadWorker* worker = g_private_get(&leveldbWorkerKey);\
     if (!worker) {\
 	    func##_fp real;\
 	    SETSYM_OR_FAIL(real, #func);\
-	    return real(__VA_ARGS__);\
+	    int rc = real(__VA_ARGS__);\
+            __sync_fetch_and_sub(&isRecursive, 1);\
+	    return rc;\
     }\
     if (worker->activeContext != EXECTX_BITCOIN) {\
-	    return worker->ftable.func(__VA_ARGS__);\
-    }
+	    int rc = worker->ftable.func(__VA_ARGS__);\
+	    __sync_fetch_and_sub(&isRecursive, 1);\
+	    return rc;\
+    }\
+    __sync_fetch_and_sub(&isRecursive, 1);\
+
+#define _FTABLE_GUARD_V(func, version, ...)\
+    if(__sync_fetch_and_add(&isRecursive, 1)) {\
+	    func##_fp real;\
+	    SETSYM_OR_FAIL_V(real, #func, version);	\
+	    int rc = real(__VA_ARGS__);\
+	    __sync_fetch_and_sub(&isRecursive, 1);\
+            return rc;\
+    }\
+    LeveldbPreloadWorker* worker = g_private_get(&leveldbWorkerKey);\
+    if (!worker) {\
+	    func##_fp real;\
+	    SETSYM_OR_FAIL_V(real, #func, version);	\
+	    int rc = real(__VA_ARGS__);\
+            __sync_fetch_and_sub(&isRecursive, 1);\
+	    return rc;\
+    }\
+    if (worker->activeContext != EXECTX_BITCOIN) {\
+	    int rc = worker->ftable.func(__VA_ARGS__);\
+	    __sync_fetch_and_sub(&isRecursive, 1);\
+	    return rc;\
+    }\
+    __sync_fetch_and_sub(&isRecursive, 1);\
 
 int usleep(unsigned int usec) {
 	{
@@ -373,8 +438,14 @@ int usleep(unsigned int usec) {
  * pthreads
  */
 
+/* general success return value */
+#ifdef OK
+#undef OK
+#endif
+#define OK 0
+
 int pthread_create(pthread_t *thread, const pthread_attr_t *attr,
-                          void *(*start_routine) (void *), void *arg) {
+		   void *(*start_routine) (void *), void *arg) {
 	real_fprintf(stderr, "pthread_entered\n");
 	_FTABLE_GUARD(pthread_create, thread, attr, start_routine, arg);
 	real_fprintf(stderr, "passing to pth_pthread_create\n");
@@ -411,13 +482,10 @@ int pthread_join(pthread_t thread, void **retval) {
 	return rc;
 }
 
-/*
-int pthread_detach(pthread_t thread) {
-    LeveldbPreloadWorker* worker = g_private_get(&leveldbWorkerKey);
-    int rc = 0;
 
-    if(worker->activeContext == EXECTX_BITCOIN) {
-        worker->activeContext = EXECTX_PTH;
+int pthread_detach(pthread_t thread) {
+	_FTABLE_GUARD(pthread_detach, thread);
+	int rc = 0;
         pth_attr_t na;
 
         if (thread == 0) {
@@ -431,317 +499,213 @@ int pthread_detach(pthread_t thread) {
         }
 
         worker->activeContext = EXECTX_BITCOIN;
-    } else {
-        rc = worker->ftable.pthread_detach(thread);
-    }
-
-    return rc;
+	return rc;
 }
 
 int pthread_once(pthread_once_t *once_control, void (*init_routine)(void)) {
-    LeveldbPreloadWorker* worker = g_private_get(&leveldbWorkerKey);
-    int rc = 0;
-
-    if(worker->activeContext == EXECTX_BITCOIN) {
-        worker->activeContext = EXECTX_PTH;
+	_FTABLE_GUARD(pthread_once, once_control, init_routine);
+	assert(0);
+	int rc = 0;
 
         if (once_control == NULL || init_routine == NULL) {
-            errno = EINVAL;
-            rc = EINVAL;
+		errno = EINVAL;
+		rc = EINVAL;
         } else {
-            if (*once_control != 1) {
-                worker->activeContext = EXECTX_BITCOIN;
-                init_routine();
-                worker->activeContext = EXECTX_PTH;
-            }
-            *once_control = 1;
+		if (*once_control != 1) {
+			worker->activeContext = EXECTX_BITCOIN;
+			init_routine();
+			worker->activeContext = EXECTX_PTH;
+		}
+		*once_control = 1;
         }
-
         worker->activeContext = EXECTX_BITCOIN;
-    } else {
-        rc = worker->ftable.pthread_once(once_control, init_routine);
-    }
-
-    return rc;
+	return rc;
 }
 
 int pthread_key_create(pthread_key_t *key, void (*destructor)(void*)) {
-    LeveldbPreloadWorker* worker = g_private_get(&leveldbWorkerKey);
-    int rc = 0;
-
-    if(worker->activeContext == EXECTX_BITCOIN) {
-        worker->activeContext = EXECTX_PTH;
-
+	/*{
+		if(!__sync_fetch_and_add(&isRecursive, 1)) {
+			pthread_key_create_fp real;
+			SETSYM_OR_FAIL(real, "pthread_key_create");
+			int rc = real(key, destructor);
+			__sync_fetch_and_sub(&isRecursive, 1);
+			return rc;
+		}
+		__sync_fetch_and_sub(&isRecursive, 1);
+		LeveldbPreloadWorker* worker = g_private_get(&leveldbWorkerKey);
+		assert(0);
+		if (!worker) {
+			__sync_fetch_and_add(&isRecursive, 1);
+			pthread_key_create_fp real;
+			SETSYM_OR_FAIL(real, "pthread_key_create");
+			int rc = real(key, destructor);
+			__sync_fetch_and_sub(&isRecursive, 1);
+			return rc;
+		}
+		if (worker->activeContext != EXECTX_BITCOIN) {
+			int rc = worker->ftable.pthread_key_create(key, destructor);
+			__sync_fetch_and_sub(&isRecursive, 1);
+			return rc;
+		}
+		}*/
+	_FTABLE_GUARD(pthread_key_create, key, destructor);
+	int rc = 0;
         if (!pth_key_create((pth_key_t *)key, destructor)) {
-            rc = errno;
+		rc = errno;
         }
-
         worker->activeContext = EXECTX_BITCOIN;
-    } else {
-        rc = worker->ftable.pthread_key_create(key, destructor);
-    }
-
-    return rc;
+	return rc;
 }
 
+/*
 int pthread_setspecific(pthread_key_t key, const void *value) {
-    LeveldbPreloadWorker* worker = g_private_get(&leveldbWorkerKey);
-    int rc = 0;
-
-    if(worker->activeContext == EXECTX_BITCOIN) {
-        worker->activeContext = EXECTX_PTH;
-
+	_FTABLE_GUARD(pthread_setspecific, key, value);
+	int rc = 0;
         if (!pth_key_setdata((pth_key_t)key, value)) {
-            rc = errno;
+		rc = errno;
         }
-
         worker->activeContext = EXECTX_BITCOIN;
-    } else {
-        rc = worker->ftable.pthread_setspecific(key, value);
-    }
-
-    return rc;
+	return rc;
 }
 
 void *pthread_getspecific(pthread_key_t key) {
-    LeveldbPreloadWorker* worker = g_private_get(&leveldbWorkerKey);
-    void* pointer = NULL;
-
-    if(worker->activeContext == EXECTX_BITCOIN) {
-        worker->activeContext = EXECTX_PTH;
-
+	_FTABLE_GUARD(pthread_getspecific, key);
+	void* pointer = NULL;
         pointer = pth_key_getdata((pth_key_t)key);
-
         worker->activeContext = EXECTX_BITCOIN;
-    } else {
-        pointer = worker->ftable.pthread_getspecific(key);
-    }
-
-    return pointer;
+	return pointer;
 }
+*/
 
 int pthread_attr_setdetachstate(pthread_attr_t *attr, int detachstate) {
-    LeveldbPreloadWorker* worker = g_private_get(&leveldbWorkerKey);
-    int rc = 0;
-
-
-    if(worker->activeContext == EXECTX_BITCOIN) {
-        worker->activeContext = EXECTX_PTH;
-
-
-
+	_FTABLE_GUARD(pthread_attr_setdetachstate, attr, detachstate);
+	int rc = 0;
+	assert(0);
         worker->activeContext = EXECTX_BITCOIN;
-    } else {
-        rc = worker->ftable.pthread_attr_setdetashstate(attr, detachstate);
-    }
-
-    return rc;
+	return rc;
 }
 
 int pthread_attr_getdetachstate(const pthread_attr_t *attr, int *detachstate) {
-    LeveldbPreloadWorker* worker = g_private_get(&leveldbWorkerKey);
-    int rc = 0;
-
-    if(worker->activeContext == EXECTX_BITCOIN) {
-        worker->activeContext = EXECTX_PTH;
-
-
-
+	_FTABLE_GUARD(pthread_attr_getdetachstate, attr, detachstate);
+	int rc = 0;
+	assert(0);
         worker->activeContext = EXECTX_BITCOIN;
-    } else {
-        rc = worker->ftable.pthread_attr_getdetachstate(attr, detachstate);
-    }
-
-    return rc;
+	return rc;
 }
 
-int pthread_cond_init(pthread_cond_t *cond, const pthread_condattr_t *attr) {
-    LeveldbPreloadWorker* worker = g_private_get(&leveldbWorkerKey);
-    int rc = 0;
 
-    if(worker->activeContext == EXECTX_BITCOIN) {
-        worker->activeContext = EXECTX_PTH;
+//int pthread_cond_init(pthread_cond_t *cond, const pthread_condattr_t *attr) 
+//	__THROW __nonnull ((1));
 
-
-
+int pthread_cond_init(pthread_cond_t *cond, const pthread_condattr_t *attr) 
+{
+	_FTABLE_GUARD_V(pthread_cond_init, "GLIBC_2.3.2", cond, attr);
+	int rc = 0;
+	assert(0);
         worker->activeContext = EXECTX_BITCOIN;
-    } else {
-        rc = worker->ftable.pthread_cond_init(cond, attr);
-    }
-
-    return rc;
+	return rc;
 }
 
 int pthread_cond_destroy(pthread_cond_t *cond) {
-    LeveldbPreloadWorker* worker = g_private_get(&leveldbWorkerKey);
-    int rc = 0;
-
-    if(worker->activeContext == EXECTX_BITCOIN) {
-        worker->activeContext = EXECTX_PTH;
-
-
-
+	_FTABLE_GUARD(pthread_cond_destroy, cond);
+	int rc = 0;
+	assert(0);
         worker->activeContext = EXECTX_BITCOIN;
-    } else {
-        rc = worker->ftable.pthread_cond_destroy(cond);
-    }
-
-    return rc;
+	return rc;
 }
 
 int pthread_cond_signal(pthread_cond_t *cond) {
-    LeveldbPreloadWorker* worker = g_private_get(&leveldbWorkerKey);
-    int rc = 0;
-
-    if(worker->activeContext == EXECTX_BITCOIN) {
-        worker->activeContext = EXECTX_PTH;
-
-
-
+	_FTABLE_GUARD(pthread_cond_signal, cond);
+	int rc = 0;
+	assert(0);
         worker->activeContext = EXECTX_BITCOIN;
-    } else {
-        rc = worker->ftable.pthread_cond_signal(cond);
-    }
-
-    return rc;
+	return rc;
 }
 
 int pthread_cond_broadcast(pthread_cond_t *cond) {
-    LeveldbPreloadWorker* worker = g_private_get(&leveldbWorkerKey);
-    int rc = 0;
-
-    if(worker->activeContext == EXECTX_BITCOIN) {
-        worker->activeContext = EXECTX_PTH;
-
-
-
+	_FTABLE_GUARD(pthread_cond_broadcast, cond);
+	int rc = 0;
+	assert(0);
         worker->activeContext = EXECTX_BITCOIN;
-    } else {
-        rc = worker->ftable.pthread_cond_broadcast(cond);
-    }
-
-    return rc;
+	return rc;
 }
 
 int pthread_cond_wait(pthread_cond_t *cond, pthread_mutex_t *mutex) {
-    LeveldbPreloadWorker* worker = g_private_get(&leveldbWorkerKey);
-    int rc = 0;
-
-    if(worker->activeContext == EXECTX_BITCOIN) {
-        worker->activeContext = EXECTX_PTH;
-
-
-
+	_FTABLE_GUARD(pthread_cond_wait, cond, mutex);
+	int rc = 0;
+	assert(0);
         worker->activeContext = EXECTX_BITCOIN;
-    } else {
-        rc = worker->ftable.pthread_cond_wait(cond, mutex);
-    }
-
-    return rc;
+	return rc;
 }
 
 int pthread_cond_timedwait(pthread_cond_t *cond, pthread_mutex_t *mutex,
               const struct timespec *abstime) {
-    LeveldbPreloadWorker* worker = g_private_get(&leveldbWorkerKey);
-    int rc = 0;
-
-    if(worker->activeContext == EXECTX_BITCOIN) {
-        worker->activeContext = EXECTX_PTH;
-
-
-
+	_FTABLE_GUARD(pthread_cond_wait, cond, mutex);
+	int rc = 0;
+	assert(0);
         worker->activeContext = EXECTX_BITCOIN;
-    } else {
-        rc = worker->ftable.pthread_cond_timedwait(cond, mutex, abstime);
-    }
-
-    return rc;
+	return rc;
 }
 
 int pthread_mutex_init(pthread_mutex_t *mutex, const pthread_mutexattr_t *attr) {
-    LeveldbPreloadWorker* worker = g_private_get(&leveldbWorkerKey);
-    int rc = 0;
-    pth_mutex_t *m;
-
-    if(worker->activeContext == EXECTX_BITCOIN) {
-        worker->activeContext = EXECTX_PTH;
-
-
-
+	_FTABLE_GUARD(pthread_mutex_init, mutex, attr);
+	int rc = 0;
+	if (attr != NULL) {
+		rc = EINVAL;
+	} else {
+		rc = worker->ftable.pth_mutex_init((pth_mutex_t *)mutex);
+        }
         worker->activeContext = EXECTX_BITCOIN;
-    } else {
-        rc = worker->ftable.pthread_mutex_init(mutex, attr);
-    }
-
-    return rc;
+	return rc;
 }
 
 int pthread_mutex_destroy(pthread_mutex_t *mutex) {
-    LeveldbPreloadWorker* worker = g_private_get(&leveldbWorkerKey);
-    int rc = 0;
-
-    if(worker->activeContext == EXECTX_BITCOIN) {
-        worker->activeContext = EXECTX_PTH;
-
-
-
+	_FTABLE_GUARD(pthread_mutex_destroy, mutex);
+	int rc = 0;
+	assert(0);
         worker->activeContext = EXECTX_BITCOIN;
-    } else {
-        rc = worker->ftable.pthread_mutex_destroy(mutex);
-    }
+	return rc;
+}
 
-    return rc;
+int PTHREAD_MUTEX_IS_INITIALIZED(pthread_mutex_t mutex) {
+	pthread_mutex_t empty = PTHREAD_MUTEX_INITIALIZER;
+	return !strncmp((const char *)&mutex, (const char *)&empty, sizeof(pthread_mutex_t));
 }
 
 int pthread_mutex_lock(pthread_mutex_t *mutex) {
-    LeveldbPreloadWorker* worker = g_private_get(&leveldbWorkerKey);
-    int rc = 0;
-
-    if(worker->activeContext == EXECTX_BITCOIN) {
-        worker->activeContext = EXECTX_PTH;
-
-
-
+	_FTABLE_GUARD(pthread_mutex_lock, mutex);
+	int rc = 0;
+	if (mutex == NULL) {
+		rc = EINVAL;
+	} else if (PTHREAD_MUTEX_IS_INITIALIZED(*mutex)) {
+		if (pthread_mutex_init(mutex, NULL) != OK)
+			rc = errno;
+		else if (!worker->ftable.pth_mutex_acquire((pth_mutex_t *)mutex, FALSE, NULL))
+			rc = errno;
+	}
         worker->activeContext = EXECTX_BITCOIN;
-    } else {
-        rc = worker->ftable.pthread_mutex_lock(mutex);
-    }
-
-    return rc;
+	return rc;
 }
 
 int pthread_mutex_trylock(pthread_mutex_t *mutex) {
-    LeveldbPreloadWorker* worker = g_private_get(&leveldbWorkerKey);
-    int rc = 0;
-
-    if(worker->activeContext == EXECTX_BITCOIN) {
-        worker->activeContext = EXECTX_PTH;
-
-
-
+	_FTABLE_GUARD(pthread_mutex_trylock, mutex);
+	int rc = 0;
+	if (mutex == NULL) {
+		rc = EINVAL;
+	} else if (PTHREAD_MUTEX_IS_INITIALIZED(*mutex)) {
+		if (pthread_mutex_init(mutex, NULL) != OK)
+			rc = errno;
+		else if (!worker->ftable.pth_mutex_acquire((pth_mutex_t *)mutex, TRUE, NULL))
+			rc = errno;
+	}
         worker->activeContext = EXECTX_BITCOIN;
-    } else {
-        rc = worker->ftable.pthread_mutex_trylock(mutex);
-    }
-
-    return rc;
+	return rc;
 }
 
 int pthread_mutex_unlock(pthread_mutex_t *mutex) {
-    LeveldbPreloadWorker* worker = g_private_get(&leveldbWorkerKey);
-    int rc = 0;
-
-    if(worker->activeContext == EXECTX_BITCOIN) {
-        worker->activeContext = EXECTX_PTH;
-
-
-
+	_FTABLE_GUARD(pthread_mutex_unlock, mutex);
+	int rc = 0;
+	assert(0);
         worker->activeContext = EXECTX_BITCOIN;
-    } else {
-        rc = worker->ftable.pthread_mutex_unlock(mutex);
-    }
-
-    return rc;
+	return rc;
 }
-*/
-
