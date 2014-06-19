@@ -51,6 +51,7 @@ typedef ssize_t (*sendto_fp)(int, const void *, size_t, int, const struct sockad
 
 /* pth */
 
+typedef void (*pth_init_fp)(void);
 typedef pth_t (*pth_spawn_fp)(pth_attr_t attr, void *(*func)(void *), void *arg);
 typedef pth_t (*pth_join_fp)(pth_t thread, void **retval);
 typedef int (*pth_mutex_init_fp)(pth_mutex_t *);
@@ -106,6 +107,7 @@ struct _FunctionTable {
 	write_fp pth_write;
 	usleep_fp pth_usleep;
 
+	pth_init_fp pth_init;
 	pth_join_fp pth_join;
 	pth_spawn_fp pth_spawn;
 	pth_mutex_init_fp pth_mutex_init;
@@ -277,6 +279,11 @@ void leveldbpreload_init(GModule* handle) {
 	g_assert(g_module_symbol(handle, "pth_spawn", (gpointer*)&worker->ftable.pth_spawn));
 	g_assert(g_module_symbol(handle, "pth_usleep", (gpointer*)&worker->ftable.pth_usleep));
 	g_assert(g_module_symbol(handle, "pth_join", (gpointer*)&worker->ftable.pth_join));
+	g_assert(g_module_symbol(handle, "pth_spawn", (gpointer*)&worker->ftable.pth_spawn));
+	g_assert(g_module_symbol(handle, "pth_init", (gpointer*)&worker->ftable.pth_init));
+	g_assert(g_module_symbol(handle, "pth_mutex_init", (gpointer*)&worker->ftable.pth_mutex_init));
+	g_assert(g_module_symbol(handle, "pth_mutex_release", (gpointer*)&worker->ftable.pth_mutex_release));
+	g_assert(g_module_symbol(handle, "pth_mutex_acquire", (gpointer*)&worker->ftable.pth_mutex_acquire));
 
 	/* lookup system and pthread calls that exist outside of the plug-in module.
 	 * do the lookup here and save to pointer so we dont have to redo the
@@ -593,10 +600,6 @@ int pthread_attr_getdetachstate(const pthread_attr_t *attr, int *detachstate) {
 	return rc;
 }
 
-
-//int pthread_cond_init(pthread_cond_t *cond, const pthread_condattr_t *attr) 
-//	__THROW __nonnull ((1));
-
 int pthread_cond_init(pthread_cond_t *cond, const pthread_condattr_t *attr) 
 {
 	_FTABLE_GUARD_V(pthread_cond_init, "GLIBC_2.3.2", cond, attr);
@@ -650,11 +653,11 @@ int pthread_cond_timedwait(pthread_cond_t *cond, pthread_mutex_t *mutex,
 int pthread_mutex_init(pthread_mutex_t *mutex, const pthread_mutexattr_t *attr) {
 	_FTABLE_GUARD(pthread_mutex_init, mutex, attr);
 	int rc = 0;
-	if (attr != NULL) {
+	worker->ftable.pth_init();
+	if (mutex == NULL) {
 		rc = EINVAL;
-	} else {
-		rc = worker->ftable.pth_mutex_init((pth_mutex_t *)mutex);
-        }
+	} else if (!worker->ftable.pth_mutex_init((pth_mutex_t *)mutex))
+		rc = errno;
         worker->activeContext = EXECTX_BITCOIN;
 	return rc;
 }
@@ -682,7 +685,8 @@ int pthread_mutex_lock(pthread_mutex_t *mutex) {
 			rc = errno;
 		else if (!worker->ftable.pth_mutex_acquire((pth_mutex_t *)mutex, FALSE, NULL))
 			rc = errno;
-	}
+	} else if (!worker->ftable.pth_mutex_acquire((pth_mutex_t *)mutex, FALSE, NULL))
+		rc = errno;
         worker->activeContext = EXECTX_BITCOIN;
 	return rc;
 }
@@ -697,7 +701,8 @@ int pthread_mutex_trylock(pthread_mutex_t *mutex) {
 			rc = errno;
 		else if (!worker->ftable.pth_mutex_acquire((pth_mutex_t *)mutex, TRUE, NULL))
 			rc = errno;
-	}
+	} else if (!worker->ftable.pth_mutex_acquire((pth_mutex_t *)mutex, TRUE, NULL))
+		rc = errno;
         worker->activeContext = EXECTX_BITCOIN;
 	return rc;
 }
@@ -705,7 +710,15 @@ int pthread_mutex_trylock(pthread_mutex_t *mutex) {
 int pthread_mutex_unlock(pthread_mutex_t *mutex) {
 	_FTABLE_GUARD(pthread_mutex_unlock, mutex);
 	int rc = 0;
-	assert(0);
+	if (mutex == NULL) {
+		rc = EINVAL;
+	} else if (PTHREAD_MUTEX_IS_INITIALIZED(*mutex)) {
+		if (pthread_mutex_init(mutex, NULL) != OK)
+			rc = errno;
+		else if (!worker->ftable.pth_mutex_release((pth_mutex_t *)mutex))
+			rc = errno;
+	} else if (!worker->ftable.pth_mutex_release((pth_mutex_t *)mutex))
+		rc = errno;
         worker->activeContext = EXECTX_BITCOIN;
 	return rc;
 }

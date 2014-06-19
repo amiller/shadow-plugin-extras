@@ -65,8 +65,8 @@ void *doNothing(void *) {
 
 static int _hello_startClient(Hello* h) {
 	//h->client.serverHostName = strndup(serverHostname, (size_t)50);
-
 	write(2, "doing work\n", 12);
+
 	pthread_t thread;
 	pthread_create(&thread, NULL, &doNothing, NULL);
 	void *result;
@@ -259,15 +259,19 @@ void hello_new(int argc, char *argv[], ShadowLogFunc slogf) {
 	assert(slogf);
 
 	if(argc < 1 || argc > 2) {
-		slogf(SHADOW_LOG_LEVEL_WARNING, __FUNCTION__, USAGE);
+		//leveldbpreload_setContext(EXECTX_SHADOW);
+		//slogf(SHADOW_LOG_LEVEL_WARNING, __FUNCTION__, USAGE);
+		//leveldbpreload_setContext(EXECTX_BITCOIN);
 		return;
 	}
 
 	/* use epoll to asynchronously watch events for all of our sockets */
 	int mainEpollDescriptor = epoll_create(1);
 	if(mainEpollDescriptor == -1) {
-		slogf(SHADOW_LOG_LEVEL_CRITICAL, __FUNCTION__,
-				"Error in main epoll_create");
+		//leveldbpreload_setContext(EXECTX_SHADOW);
+		//slogf(SHADOW_LOG_LEVEL_CRITICAL, __FUNCTION__,
+		//		"Error in main epoll_create");
+		//leveldbpreload_setContext(EXECTX_BITCOIN);
 		close(mainEpollDescriptor);
 		return;
 	}
@@ -282,7 +286,9 @@ void hello_new(int argc, char *argv[], ShadowLogFunc slogf) {
 
 
 	// Both Client and Server will run the threading exercise
-	slogf(SHADOW_LOG_LEVEL_CRITICAL, __FUNCTION__, "Starting threads");
+	//leveldbpreload_setContext(EXECTX_SHADOW);
+	//slogf(SHADOW_LOG_LEVEL_CRITICAL, __FUNCTION__, "Starting threads");
+	//leveldbpreload_setContext(EXECTX_BITCOIN);
 	//pth_init();
 	//pth_yield(NULL);
 
