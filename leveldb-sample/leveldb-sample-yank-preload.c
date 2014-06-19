@@ -57,6 +57,15 @@ typedef pth_t (*pth_join_fp)(pth_t thread, void **retval);
 typedef int (*pth_mutex_init_fp)(pth_mutex_t *);
 typedef int (*pth_mutex_acquire_fp)(pth_mutex_t *, int, pth_event_t);
 typedef int (*pth_mutex_release_fp)(pth_mutex_t *);
+typedef int (*pth_cond_init_fp)(pth_cond_t *);
+typedef int (*pth_cond_await_fp)(pth_cond_t *, pth_mutex_t *, pth_event_t);
+typedef int (*pth_cond_notify_fp)(pth_cond_t *, int);
+typedef int (*pth_key_create_fp)(pth_key_t *, void (*)(void *));
+typedef int (*pth_key_delete_fp)(pth_key_t);
+typedef int (*pth_key_setdata_fp)(pth_key_t, const void *);
+typedef void *(*pth_key_getdata_fp)(pth_key_t);
+
+
 
 
 /* pthread */
@@ -89,8 +98,9 @@ typedef int (*pthread_mutex_unlock_fp)(pthread_mutex_t*);
 /* the key used to store each threads version of their searched function library.
  * the use this key to retrieve this library when intercepting functions from tor.
  */
-//static __thread void * leveldbWorkerKey = NULL;
-static GPrivate leveldbWorkerKey = G_PRIVATE_INIT(g_free);
+static __thread void * leveldbWorkerKey = NULL;
+//static GPrivate leveldbWorkerKey = G_PRIVATE_INIT(g_free);
+#define g_private_get(ptr) (*(ptr))
 
 /* track if we are in a recursive loop to avoid infinite recursion.
  * threads MUST access this via &isRecursive to ensure each has its own copy
@@ -113,6 +123,13 @@ struct _FunctionTable {
 	pth_mutex_init_fp pth_mutex_init;
 	pth_mutex_acquire_fp pth_mutex_acquire;
 	pth_mutex_release_fp pth_mutex_release;
+	pth_cond_init_fp pth_cond_init;
+	pth_cond_await_fp pth_cond_await;
+	pth_cond_notify_fp pth_cond_notify;
+	pth_key_create_fp pth_key_create;
+	pth_key_delete_fp pth_key_delete;
+	pth_key_setdata_fp pth_key_setdata;
+	pth_key_getdata_fp pth_key_getdata;
 	
 	
 	pthread_create_fp pthread_create;
@@ -284,6 +301,13 @@ void leveldbpreload_init(GModule* handle) {
 	g_assert(g_module_symbol(handle, "pth_mutex_init", (gpointer*)&worker->ftable.pth_mutex_init));
 	g_assert(g_module_symbol(handle, "pth_mutex_release", (gpointer*)&worker->ftable.pth_mutex_release));
 	g_assert(g_module_symbol(handle, "pth_mutex_acquire", (gpointer*)&worker->ftable.pth_mutex_acquire));
+	g_assert(g_module_symbol(handle, "pth_cond_init", (gpointer*)&worker->ftable.pth_cond_init));
+	g_assert(g_module_symbol(handle, "pth_cond_await", (gpointer*)&worker->ftable.pth_cond_await));
+	g_assert(g_module_symbol(handle, "pth_cond_notify", (gpointer*)&worker->ftable.pth_cond_notify));
+	g_assert(g_module_symbol(handle, "pth_key_create", (gpointer*)&worker->ftable.pth_key_create));
+	g_assert(g_module_symbol(handle, "pth_key_delete", (gpointer*)&worker->ftable.pth_key_delete));
+	g_assert(g_module_symbol(handle, "pth_key_setdata", (gpointer*)&worker->ftable.pth_key_setdata));
+	g_assert(g_module_symbol(handle, "pth_key_getdata", (gpointer*)&worker->ftable.pth_key_getdata));
 
 	/* lookup system and pthread calls that exist outside of the plug-in module.
 	 * do the lookup here and save to pointer so we dont have to redo the
@@ -314,17 +338,17 @@ void leveldbpreload_init(GModule* handle) {
 	SETSYM_OR_FAIL(worker->ftable.pthread_mutex_trylock, "pthread_mutex_trylock");
 	SETSYM_OR_FAIL(worker->ftable.pthread_mutex_unlock, "pthread_mutex_unlock");
 
-	g_private_set(&leveldbWorkerKey, worker);
-	assert(g_private_get(&leveldbWorkerKey));
-	//leveldbWorkerKey = &worker;
+	//g_private_set(&leveldbWorkerKey, worker);
+	//assert(g_private_get(&leveldbWorkerKey));
+	leveldbWorkerKey = &worker;
 
 	assert(sizeof(pthread_t) >= sizeof(pth_t));
 	assert(sizeof(pthread_attr_t) >= sizeof(pth_attr_t));
 	assert(sizeof(pthread_mutex_t) >= sizeof(pth_mutex_t));
 	assert(sizeof(pthread_cond_t) >= sizeof(pth_cond_t));
+        assert(sizeof(pthread_key_t) >= sizeof(pth_key_t));
 }
 
-//#define g_private_get(ptr) (*(ptr))
 void leveldbpreload_setContext(ExecutionContext ctx) {
 	//real_fprintf(stderr, "context2\n");
 	LeveldbPreloadWorker* worker = g_private_get(&leveldbWorkerKey);
@@ -379,11 +403,11 @@ ssize_t read(int fp, void *d, size_t s) {
 	return rc;
 }
 
-#define _FTABLE_GUARD(func, ...) \
+#define _FTABLE_GUARD(rctype, func, ...)       \
     if(__sync_fetch_and_add(&isRecursive, 1)) {\
 	    func##_fp real;\
 	    SETSYM_OR_FAIL(real, #func);\
-	    int rc = real(__VA_ARGS__);\
+	    rctype rc = real(__VA_ARGS__);\
 	    __sync_fetch_and_sub(&isRecursive, 1);\
             return rc;\
     }\
@@ -391,22 +415,22 @@ ssize_t read(int fp, void *d, size_t s) {
     if (!worker) {\
 	    func##_fp real;\
 	    SETSYM_OR_FAIL(real, #func);\
-	    int rc = real(__VA_ARGS__);\
+	    rctype rc = real(__VA_ARGS__);\
             __sync_fetch_and_sub(&isRecursive, 1);\
 	    return rc;\
     }\
     if (worker->activeContext != EXECTX_BITCOIN) {\
-	    int rc = worker->ftable.func(__VA_ARGS__);\
+	    rctype rc = worker->ftable.func(__VA_ARGS__);\
 	    __sync_fetch_and_sub(&isRecursive, 1);\
 	    return rc;\
     }\
     __sync_fetch_and_sub(&isRecursive, 1);\
 
-#define _FTABLE_GUARD_V(func, version, ...)\
+#define _FTABLE_GUARD_V(rctype, func, version, ...)	\
     if(__sync_fetch_and_add(&isRecursive, 1)) {\
 	    func##_fp real;\
 	    SETSYM_OR_FAIL_V(real, #func, version);	\
-	    int rc = real(__VA_ARGS__);\
+	    rctype rc = real(__VA_ARGS__);\
 	    __sync_fetch_and_sub(&isRecursive, 1);\
             return rc;\
     }\
@@ -414,12 +438,12 @@ ssize_t read(int fp, void *d, size_t s) {
     if (!worker) {\
 	    func##_fp real;\
 	    SETSYM_OR_FAIL_V(real, #func, version);	\
-	    int rc = real(__VA_ARGS__);\
+	    rctype rc = real(__VA_ARGS__);\
             __sync_fetch_and_sub(&isRecursive, 1);\
 	    return rc;\
     }\
     if (worker->activeContext != EXECTX_BITCOIN) {\
-	    int rc = worker->ftable.func(__VA_ARGS__);\
+	    rctype rc = worker->ftable.func(__VA_ARGS__);\
 	    __sync_fetch_and_sub(&isRecursive, 1);\
 	    return rc;\
     }\
@@ -431,7 +455,7 @@ int usleep(unsigned int usec) {
 		if (worker)
 			real_fprintf(stderr, "in usleep; context:%d (btc:%d)\n", worker->activeContext, EXECTX_BITCOIN);
 	}
-	_FTABLE_GUARD(usleep, usec);
+	_FTABLE_GUARD(int, usleep, usec);
 	worker->activeContext = EXECTX_PTH;
 	//usleep(usec);
 	real_fprintf(stderr, "about to pth_sleep\n");
@@ -454,7 +478,7 @@ int usleep(unsigned int usec) {
 int pthread_create(pthread_t *thread, const pthread_attr_t *attr,
 		   void *(*start_routine) (void *), void *arg) {
 	real_fprintf(stderr, "pthread_entered\n");
-	_FTABLE_GUARD(pthread_create, thread, attr, start_routine, arg);
+        _FTABLE_GUARD(int, pthread_create, thread, attr, start_routine, arg);
 	real_fprintf(stderr, "passing to pth_pthread_create\n");
 	pth_attr_t na;
 	int rc;
@@ -477,7 +501,7 @@ int pthread_create(pthread_t *thread, const pthread_attr_t *attr,
 }
 
 int pthread_join(pthread_t thread, void **retval) {
-	_FTABLE_GUARD(pthread_join, thread, retval);
+        _FTABLE_GUARD(int, pthread_join, thread, retval);
 	int rc;
         if (!worker->ftable.pth_join((pth_t)thread, retval)) {
 		rc = errno;
@@ -489,9 +513,8 @@ int pthread_join(pthread_t thread, void **retval) {
 	return rc;
 }
 
-
 int pthread_detach(pthread_t thread) {
-	_FTABLE_GUARD(pthread_detach, thread);
+        _FTABLE_GUARD(int, pthread_detach, thread);
 	int rc = 0;
         pth_attr_t na;
 
@@ -510,10 +533,8 @@ int pthread_detach(pthread_t thread) {
 }
 
 int pthread_once(pthread_once_t *once_control, void (*init_routine)(void)) {
-	_FTABLE_GUARD(pthread_once, once_control, init_routine);
-	assert(0);
+	_FTABLE_GUARD(int, pthread_once, once_control, init_routine);
 	int rc = 0;
-
         if (once_control == NULL || init_routine == NULL) {
 		errno = EINVAL;
 		rc = EINVAL;
@@ -530,45 +551,26 @@ int pthread_once(pthread_once_t *once_control, void (*init_routine)(void)) {
 }
 
 int pthread_key_create(pthread_key_t *key, void (*destructor)(void*)) {
-	/*{
-		if(!__sync_fetch_and_add(&isRecursive, 1)) {
-			pthread_key_create_fp real;
-			SETSYM_OR_FAIL(real, "pthread_key_create");
-			int rc = real(key, destructor);
-			__sync_fetch_and_sub(&isRecursive, 1);
-			return rc;
-		}
-		__sync_fetch_and_sub(&isRecursive, 1);
-		LeveldbPreloadWorker* worker = g_private_get(&leveldbWorkerKey);
-		assert(0);
-		if (!worker) {
-			__sync_fetch_and_add(&isRecursive, 1);
-			pthread_key_create_fp real;
-			SETSYM_OR_FAIL(real, "pthread_key_create");
-			int rc = real(key, destructor);
-			__sync_fetch_and_sub(&isRecursive, 1);
-			return rc;
-		}
-		if (worker->activeContext != EXECTX_BITCOIN) {
-			int rc = worker->ftable.pthread_key_create(key, destructor);
-			__sync_fetch_and_sub(&isRecursive, 1);
-			return rc;
-		}
-		}*/
-	_FTABLE_GUARD(pthread_key_create, key, destructor);
+	_FTABLE_GUARD(int, pthread_key_create, key, destructor);
 	int rc = 0;
-        if (!pth_key_create((pth_key_t *)key, destructor)) {
+        if (!worker->ftable.pth_key_create((pth_key_t *)key, destructor)) {
 		rc = errno;
         }
         worker->activeContext = EXECTX_BITCOIN;
 	return rc;
 }
 
-/*
-int pthread_setspecific(pthread_key_t key, const void *value) {
-	_FTABLE_GUARD(pthread_setspecific, key, value);
+
+int pthread_setspecific(pthread_key_t key, const void *value)  {
+	/*pthread_setspecific_fp real;
+	SETSYM_OR_FAIL(real, "pthread_setspecific");
+	assert(real);
+	int rc = real(key, value);
+	return rc;*/
+	_FTABLE_GUARD(int, pthread_setspecific, key, value);
 	int rc = 0;
-        if (!pth_key_setdata((pth_key_t)key, value)) {
+	assert(0);
+        if (!worker->ftable.pth_key_setdata((pth_key_t)key, value)) {
 		rc = errno;
         }
         worker->activeContext = EXECTX_BITCOIN;
@@ -576,16 +578,22 @@ int pthread_setspecific(pthread_key_t key, const void *value) {
 }
 
 void *pthread_getspecific(pthread_key_t key) {
-	_FTABLE_GUARD(pthread_getspecific, key);
+	/*pthread_getspecific_fp real;
+	SETSYM_OR_FAIL(real, "pthread_getspecific");
+	assert(real);
+	void* rc = real(key);
+	return rc;*/
+	_FTABLE_GUARD(void *, pthread_getspecific, key);
+	int rc = 0;
+	assert(0);
 	void* pointer = NULL;
-        pointer = pth_key_getdata((pth_key_t)key);
+        pointer = worker->ftable.pth_key_getdata((pth_key_t)key);
         worker->activeContext = EXECTX_BITCOIN;
 	return pointer;
 }
-*/
 
 int pthread_attr_setdetachstate(pthread_attr_t *attr, int detachstate) {
-	_FTABLE_GUARD(pthread_attr_setdetachstate, attr, detachstate);
+	_FTABLE_GUARD(int, pthread_attr_setdetachstate, attr, detachstate);
 	int rc = 0;
 	assert(0);
         worker->activeContext = EXECTX_BITCOIN;
@@ -593,57 +601,94 @@ int pthread_attr_setdetachstate(pthread_attr_t *attr, int detachstate) {
 }
 
 int pthread_attr_getdetachstate(const pthread_attr_t *attr, int *detachstate) {
-	_FTABLE_GUARD(pthread_attr_getdetachstate, attr, detachstate);
+	_FTABLE_GUARD(int, pthread_attr_getdetachstate, attr, detachstate);
 	int rc = 0;
 	assert(0);
         worker->activeContext = EXECTX_BITCOIN;
 	return rc;
 }
 
+int PTHREAD_COND_IS_INITIALIZED(pthread_cond_t cond) {
+	pthread_cond_t empty = PTHREAD_COND_INITIALIZER;
+	return !strncmp((const char *)&cond, (const char *)&empty, sizeof(pthread_cond_t));
+}
+
+int PTHREAD_MUTEX_IS_INITIALIZED(pthread_mutex_t mutex) {
+	pthread_mutex_t empty = PTHREAD_MUTEX_INITIALIZER;
+	return !strncmp((const char *)&mutex, (const char *)&empty, sizeof(pthread_mutex_t));
+}
+
+
 int pthread_cond_init(pthread_cond_t *cond, const pthread_condattr_t *attr) 
 {
-	_FTABLE_GUARD_V(pthread_cond_init, "GLIBC_2.3.2", cond, attr);
+	_FTABLE_GUARD_V(int, pthread_cond_init, "GLIBC_2.3.2", cond, attr);
 	int rc = 0;
-	assert(0);
+	worker->ftable.pth_init();
+	if (cond == NULL)
+		rc = EINVAL;
+	else if (!worker->ftable.pth_cond_init((pth_cond_t *)cond))
+		rc = errno;
         worker->activeContext = EXECTX_BITCOIN;
 	return rc;
 }
 
 int pthread_cond_destroy(pthread_cond_t *cond) {
-	_FTABLE_GUARD(pthread_cond_destroy, cond);
+	_FTABLE_GUARD(int, pthread_cond_destroy, cond);
 	int rc = 0;
-	assert(0);
+	if (cond == NULL)
+		rc = EINVAL;
         worker->activeContext = EXECTX_BITCOIN;
 	return rc;
 }
 
 int pthread_cond_signal(pthread_cond_t *cond) {
-	_FTABLE_GUARD(pthread_cond_signal, cond);
+	_FTABLE_GUARD(int, pthread_cond_signal, cond);
 	int rc = 0;
-	assert(0);
+	if (cond == NULL)
+		rc = EINVAL;
+	else if (PTHREAD_COND_IS_INITIALIZED(*cond))
+		if (pthread_cond_init(cond, NULL) != OK)
+			rc = errno;
+	if (!rc && !worker->ftable.pth_cond_notify((pth_cond_t *)cond, FALSE))
+		rc = errno;
         worker->activeContext = EXECTX_BITCOIN;
 	return rc;
 }
 
 int pthread_cond_broadcast(pthread_cond_t *cond) {
-	_FTABLE_GUARD(pthread_cond_broadcast, cond);
+	_FTABLE_GUARD(int, pthread_cond_broadcast, cond);
 	int rc = 0;
-	assert(0);
+	if (cond == NULL)
+		rc = EINVAL;
+	else if (PTHREAD_COND_IS_INITIALIZED(*cond))
+		if (pthread_cond_init(cond, NULL) != OK)
+			rc = errno;
+	if (!rc && !worker->ftable.pth_cond_notify((pth_cond_t *)cond, TRUE))
+		rc = errno;
         worker->activeContext = EXECTX_BITCOIN;
 	return rc;
 }
 
 int pthread_cond_wait(pthread_cond_t *cond, pthread_mutex_t *mutex) {
-	_FTABLE_GUARD(pthread_cond_wait, cond, mutex);
+	_FTABLE_GUARD(int, pthread_cond_wait, cond, mutex);
 	int rc = 0;
-	assert(0);
+	if (cond == NULL || mutex == NULL)
+		rc = EINVAL;
+	else if (PTHREAD_COND_IS_INITIALIZED(*cond))
+		if (pthread_cond_init(cond, NULL) != OK)
+			rc = errno;
+	if (!rc && PTHREAD_MUTEX_IS_INITIALIZED(*mutex))
+		if (pthread_mutex_init(mutex, NULL) != OK)
+			rc = errno;
+	if (!rc && !worker->ftable.pth_cond_await((pth_cond_t *)cond, (pth_mutex_t *)mutex, NULL))
+		rc = errno;
         worker->activeContext = EXECTX_BITCOIN;
 	return rc;
 }
 
 int pthread_cond_timedwait(pthread_cond_t *cond, pthread_mutex_t *mutex,
               const struct timespec *abstime) {
-	_FTABLE_GUARD(pthread_cond_wait, cond, mutex);
+	_FTABLE_GUARD(int, pthread_cond_wait, cond, mutex);
 	int rc = 0;
 	assert(0);
         worker->activeContext = EXECTX_BITCOIN;
@@ -651,7 +696,7 @@ int pthread_cond_timedwait(pthread_cond_t *cond, pthread_mutex_t *mutex,
 }
 
 int pthread_mutex_init(pthread_mutex_t *mutex, const pthread_mutexattr_t *attr) {
-	_FTABLE_GUARD(pthread_mutex_init, mutex, attr);
+	_FTABLE_GUARD(int, pthread_mutex_init, mutex, attr);
 	int rc = 0;
 	worker->ftable.pth_init();
 	if (mutex == NULL) {
@@ -663,61 +708,51 @@ int pthread_mutex_init(pthread_mutex_t *mutex, const pthread_mutexattr_t *attr) 
 }
 
 int pthread_mutex_destroy(pthread_mutex_t *mutex) {
-	_FTABLE_GUARD(pthread_mutex_destroy, mutex);
+	_FTABLE_GUARD(int, pthread_mutex_destroy, mutex);
 	int rc = 0;
-	assert(0);
+	if (mutex == NULL)
+		rc = EINVAL;
         worker->activeContext = EXECTX_BITCOIN;
 	return rc;
 }
 
-int PTHREAD_MUTEX_IS_INITIALIZED(pthread_mutex_t mutex) {
-	pthread_mutex_t empty = PTHREAD_MUTEX_INITIALIZER;
-	return !strncmp((const char *)&mutex, (const char *)&empty, sizeof(pthread_mutex_t));
-}
-
 int pthread_mutex_lock(pthread_mutex_t *mutex) {
-	_FTABLE_GUARD(pthread_mutex_lock, mutex);
+	_FTABLE_GUARD(int, pthread_mutex_lock, mutex);
 	int rc = 0;
 	if (mutex == NULL) {
 		rc = EINVAL;
-	} else if (PTHREAD_MUTEX_IS_INITIALIZED(*mutex)) {
+	} else if (PTHREAD_MUTEX_IS_INITIALIZED(*mutex))
 		if (pthread_mutex_init(mutex, NULL) != OK)
 			rc = errno;
-		else if (!worker->ftable.pth_mutex_acquire((pth_mutex_t *)mutex, FALSE, NULL))
-			rc = errno;
-	} else if (!worker->ftable.pth_mutex_acquire((pth_mutex_t *)mutex, FALSE, NULL))
+	if (!rc && !worker->ftable.pth_mutex_acquire((pth_mutex_t *)mutex, FALSE, NULL))
 		rc = errno;
         worker->activeContext = EXECTX_BITCOIN;
 	return rc;
 }
 
 int pthread_mutex_trylock(pthread_mutex_t *mutex) {
-	_FTABLE_GUARD(pthread_mutex_trylock, mutex);
+	_FTABLE_GUARD(int, pthread_mutex_trylock, mutex);
 	int rc = 0;
 	if (mutex == NULL) {
 		rc = EINVAL;
-	} else if (PTHREAD_MUTEX_IS_INITIALIZED(*mutex)) {
+	} else if (PTHREAD_MUTEX_IS_INITIALIZED(*mutex))
 		if (pthread_mutex_init(mutex, NULL) != OK)
 			rc = errno;
-		else if (!worker->ftable.pth_mutex_acquire((pth_mutex_t *)mutex, TRUE, NULL))
-			rc = errno;
-	} else if (!worker->ftable.pth_mutex_acquire((pth_mutex_t *)mutex, TRUE, NULL))
+	if (!rc && !worker->ftable.pth_mutex_acquire((pth_mutex_t *)mutex, TRUE, NULL))
 		rc = errno;
         worker->activeContext = EXECTX_BITCOIN;
 	return rc;
 }
 
 int pthread_mutex_unlock(pthread_mutex_t *mutex) {
-	_FTABLE_GUARD(pthread_mutex_unlock, mutex);
+	_FTABLE_GUARD(int, pthread_mutex_unlock, mutex);
 	int rc = 0;
 	if (mutex == NULL) {
 		rc = EINVAL;
-	} else if (PTHREAD_MUTEX_IS_INITIALIZED(*mutex)) {
+	} else if (PTHREAD_MUTEX_IS_INITIALIZED(*mutex))
 		if (pthread_mutex_init(mutex, NULL) != OK)
 			rc = errno;
-		else if (!worker->ftable.pth_mutex_release((pth_mutex_t *)mutex))
-			rc = errno;
-	} else if (!worker->ftable.pth_mutex_release((pth_mutex_t *)mutex))
+	if (!rc && !worker->ftable.pth_mutex_release((pth_mutex_t *)mutex))
 		rc = errno;
         worker->activeContext = EXECTX_BITCOIN;
 	return rc;

@@ -71,8 +71,8 @@ static int _hello_startClient(Hello* h) {
 	pthread_create(&thread, NULL, &doNothing, NULL);
 	void *result;
 	pthread_join(thread, NULL);
-	//doWork();
 	write(2, "done\n", 6);
+	doWork();
 	return 0;
 	/* get the address of the server */
 	struct addrinfo* serverInfo;
