@@ -53,6 +53,7 @@ ADD_CUSTOM_COMMAND (
 )
 ADD_CUSTOM_TARGET(generate_pth DEPENDS ${PTH_ROOT_DIR}/pth_p.h)
 
+
 #set_property(SOURCE ${PTH_SOURCES} APPEND PROPERTY OBJECT_DEPENDS pth_p.h)
 
 
@@ -82,6 +83,7 @@ install(TARGETS shadow-plugin-leveldb-sample-mt DESTINATION plugins)
 
 
 add_bitcode(shadow-plugin-pth-bitcode ${PTH_SOURCES})
+add_dependencies(shadow-plugin-pth-bitcode generate_pth)
 
 ## Pth Version
 ## create and install a shared library that can plug into shadow
