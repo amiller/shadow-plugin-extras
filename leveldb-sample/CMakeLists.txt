@@ -42,7 +42,7 @@ set(PTH_SOURCES
    ${PTH_ROOT_DIR}/pth_high.c
    ${PTH_ROOT_DIR}/pth_ext.c
    ${PTH_ROOT_DIR}/pth_string.c
-   ${PTH_ROOT_DIR}/pthread.c
+   #${PTH_ROOT_DIR}/pthread.c
 )
 
 ADD_CUSTOM_COMMAND (
