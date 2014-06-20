@@ -16,7 +16,9 @@ Manual Dependencies
 
 4. make generate_pth && make install
 
-5. ../leveldb-sample/shadow-leveldb-yank ../leveldb-sample/example-yank.xml
+5. mkdir -p init_data
+
+6. ../leveldb-sample/shadow-leveldb-yank ../leveldb-sample/example-yank.xml -y
 
 
 
