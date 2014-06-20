@@ -264,7 +264,9 @@ ssize_t shd_dl_read(int fp, void *d, size_t s) _SHD_DL_BODY(read, fp, d, s);
 ssize_t shd_dl_write(int fp, const void *d, size_t s) _SHD_DL_BODY(write, fp, d, s);
 
 
+
 ssize_t real_fprintf(FILE *stream, const char *format, ...) {
+	return 0;
 	char buf[1024];
 	va_list ap;
 	va_start(ap, format);
@@ -282,6 +284,9 @@ ssize_t real_fprintf(FILE *stream, const char *format, ...) {
 		SETSYM_OR_FAIL(_write, "write");
 		return _write(fileno(stream), buf, s);
 	}
+}
+
+void g_module_unload(GModule *module) {
 }
 
 
@@ -342,6 +347,7 @@ void leveldbpreload_init(GModule* handle) {
 	//assert(g_private_get(&leveldbWorkerKey));
 	leveldbWorkerKey = &worker;
 
+
 	assert(sizeof(pthread_t) >= sizeof(pth_t));
 	assert(sizeof(pthread_attr_t) >= sizeof(pth_attr_t));
 	assert(sizeof(pthread_mutex_t) >= sizeof(pth_mutex_t));
@@ -354,53 +360,6 @@ void leveldbpreload_setContext(ExecutionContext ctx) {
 	LeveldbPreloadWorker* worker = g_private_get(&leveldbWorkerKey);
 	worker->activeContext = ctx;
 	//real_fprintf(stderr, "context1\n");
-}
-
-
-
-ssize_t write(int fp, const void *d, size_t s) {
-	LeveldbPreloadWorker* worker = g_private_get(&leveldbWorkerKey);
-	ssize_t rc = 0;
-	//real_fprintf(stderr, "write %d\n", worker->activeContext);
-
-	if(worker && worker->activeContext == EXECTX_BITCOIN) {
-		real_fprintf(stderr, "bitcoin mode passing to pth\n");
-		assert(worker->ftable.pth_write);
-		worker->activeContext = EXECTX_PTH;
-		rc = worker->ftable.pth_write(fp, d, s);
-		worker->activeContext = EXECTX_BITCOIN;
-	} else if (worker) {
-		// dont mess with shadow's calls, and dont change context 
-		rc = worker->ftable.write(fp, d, s);
-	} else {
-		real_fprintf(stderr, "write skipping worker\n");
-		write_fp write;
-		SETSYM_OR_FAIL(write, "write");
-		rc = write(fp, d, s);
-	}
-
-	return rc;
-}
-
-ssize_t read(int fp, void *d, size_t s) {
-	LeveldbPreloadWorker* worker = g_private_get(&leveldbWorkerKey);
-	ssize_t rc = 0;
-	if(worker && worker->activeContext == EXECTX_BITCOIN) {
-		real_fprintf(stderr, "going to pth\n");
-		worker->activeContext = EXECTX_PTH;
-		rc = worker->ftable.pth_read(fp, d, s);
-		worker->activeContext = EXECTX_BITCOIN;
-	} else if (worker) {
-		real_fprintf(stderr, "passing to shadow\n");
-		// dont mess with shadow's calls, and dont change context 
-		rc = worker->ftable.read(fp, d, s);
-	} else {
-		read_fp read;
-		SETSYM_OR_FAIL(read, "read");
-		rc = read(fp, d, s);
-	}
-	
-	return rc;
 }
 
 #define _FTABLE_GUARD(rctype, func, ...)       \
@@ -448,6 +407,53 @@ ssize_t read(int fp, void *d, size_t s) {
 	    return rc;\
     }\
     __sync_fetch_and_sub(&isRecursive, 1);\
+
+
+ssize_t write(int fp, const void *d, size_t s) {
+	LeveldbPreloadWorker* worker = g_private_get(&leveldbWorkerKey);
+	ssize_t rc = 0;
+	//real_fprintf(stderr, "write %d\n", worker->activeContext);
+
+	if(worker && worker->activeContext == EXECTX_BITCOIN) {
+		real_fprintf(stderr, "bitcoin mode passing to pth\n");
+		assert(worker->ftable.pth_write);
+		worker->activeContext = EXECTX_PTH;
+		rc = worker->ftable.pth_write(fp, d, s);
+		worker->activeContext = EXECTX_BITCOIN;
+	} else if (worker) {
+		// dont mess with shadow's calls, and dont change context 
+		rc = worker->ftable.write(fp, d, s);
+	} else {
+		real_fprintf(stderr, "write skipping worker\n");
+		write_fp write;
+		SETSYM_OR_FAIL(write, "write");
+		rc = write(fp, d, s);
+	}
+
+	return rc;
+}
+
+ssize_t read(int fp, void *d, size_t s) {
+	LeveldbPreloadWorker* worker = g_private_get(&leveldbWorkerKey);
+	ssize_t rc = 0;
+	if(worker && worker->activeContext == EXECTX_BITCOIN) {
+		real_fprintf(stderr, "going to pth\n");
+		worker->activeContext = EXECTX_PTH;
+		rc = worker->ftable.pth_read(fp, d, s);
+		worker->activeContext = EXECTX_BITCOIN;
+	} else if (worker) {
+		real_fprintf(stderr, "passing to shadow\n");
+		// dont mess with shadow's calls, and dont change context 
+		rc = worker->ftable.read(fp, d, s);
+	} else {
+		read_fp read;
+		SETSYM_OR_FAIL(read, "read");
+		rc = read(fp, d, s);
+	}
+	
+	return rc;
+}
+
 
 int usleep(unsigned int usec) {
 	{
@@ -560,13 +566,13 @@ int pthread_key_create(pthread_key_t *key, void (*destructor)(void*)) {
 	return rc;
 }
 
-
+/*
 int pthread_setspecific(pthread_key_t key, const void *value)  {
 	/*pthread_setspecific_fp real;
 	SETSYM_OR_FAIL(real, "pthread_setspecific");
 	assert(real);
 	int rc = real(key, value);
-	return rc;*/
+	return rc;*//*
 	_FTABLE_GUARD(int, pthread_setspecific, key, value);
 	int rc = 0;
 	assert(0);
@@ -576,22 +582,23 @@ int pthread_setspecific(pthread_key_t key, const void *value)  {
         worker->activeContext = EXECTX_BITCOIN;
 	return rc;
 }
-
+/*
 void *pthread_getspecific(pthread_key_t key) {
-	/*pthread_getspecific_fp real;
+	real_fprintf(stderr, "pthread_getspecific:%d\n", key);
+	pthread_getspecific_fp real;
 	SETSYM_OR_FAIL(real, "pthread_getspecific");
 	assert(real);
 	void* rc = real(key);
-	return rc;*/
+	return rc;
 	_FTABLE_GUARD(void *, pthread_getspecific, key);
-	int rc = 0;
+	//int rc = 0;
 	assert(0);
 	void* pointer = NULL;
         pointer = worker->ftable.pth_key_getdata((pth_key_t)key);
         worker->activeContext = EXECTX_BITCOIN;
 	return pointer;
 }
-
+*/
 int pthread_attr_setdetachstate(pthread_attr_t *attr, int detachstate) {
 	_FTABLE_GUARD(int, pthread_attr_setdetachstate, attr, detachstate);
 	int rc = 0;

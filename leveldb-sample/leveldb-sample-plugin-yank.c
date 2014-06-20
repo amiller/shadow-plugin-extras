@@ -193,11 +193,15 @@ void __shadow_plugin_init__(ShadowFunctionTable* shadowlibFuncs) {
 const gchar* g_module_check_init(GModule *module) {
 	/* clear our memory before initializing */
 	//memset(&scallion, 0, sizeof(Scallion));
-	fprintf(stderr, "gmodule init leveldb\n");
+	fprintf(stderr, "gmodule check_init leveldb\n");
 	/* do all the symbol lookups we will need now, and init our thread-specific
 	 * library of intercepted functions. */
 
 	leveldbpreload_init(module);
+	fprintf(stderr, "check_init done\n");
 
 	return NULL;
+}
+
+void g_module_unload(GModule *module) {
 }
