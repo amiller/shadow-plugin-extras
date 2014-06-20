@@ -50,7 +50,11 @@ typedef ssize_t (*recvfrom_fp)(int, void *, size_t, int, struct sockaddr *, sock
 typedef ssize_t (*sendto_fp)(int, const void *, size_t, int, const struct sockaddr *, socklen_t);
 
 /* pth */
-
+typedef ssize_t (*pth_read_fp)(int, void*, size_t);
+typedef ssize_t (*pth_write_fp)(int, const void*, size_t);
+typedef int (*pth_nanosleep_fp)(const struct timespec *, struct timespec *);
+typedef int (*pth_usleep_fp)(unsigned int);
+typedef unsigned int  (*pth_sleep_fp)(unsigned int);
 typedef void (*pth_init_fp)(void);
 typedef pth_t (*pth_spawn_fp)(pth_attr_t attr, void *(*func)(void *), void *arg);
 typedef pth_t (*pth_join_fp)(pth_t thread, void **retval);
@@ -98,9 +102,9 @@ typedef int (*pthread_mutex_unlock_fp)(pthread_mutex_t*);
 /* the key used to store each threads version of their searched function library.
  * the use this key to retrieve this library when intercepting functions from tor.
  */
-static __thread void * leveldbWorkerKey = NULL;
-//static GPrivate leveldbWorkerKey = G_PRIVATE_INIT(g_free);
-#define g_private_get(ptr) (*(ptr))
+static GPrivate leveldbWorkerKey = G_PRIVATE_INIT(g_free);
+//static __thread void * leveldbWorkerKey = NULL;
+//#define g_private_get(ptr) (*(ptr))
 
 /* track if we are in a recursive loop to avoid infinite recursion.
  * threads MUST access this via &isRecursive to ensure each has its own copy
@@ -112,10 +116,14 @@ struct _FunctionTable {
 	read_fp read;
 	write_fp write;
 	usleep_fp usleep;
+	nanosleep_fp nanosleep;
+	sleep_fp sleep;
 	
-	read_fp pth_read;
-	write_fp pth_write;
-	usleep_fp pth_usleep;
+	pth_read_fp pth_read;
+	pth_write_fp pth_write;
+	pth_usleep_fp pth_usleep;
+	pth_nanosleep_fp pth_nanosleep;
+	pth_sleep_fp pth_sleep;
 
 	pth_init_fp pth_init;
 	pth_join_fp pth_join;
@@ -266,7 +274,6 @@ ssize_t shd_dl_write(int fp, const void *d, size_t s) _SHD_DL_BODY(write, fp, d,
 
 
 ssize_t real_fprintf(FILE *stream, const char *format, ...) {
-	return 0;
 	char buf[1024];
 	va_list ap;
 	va_start(ap, format);
@@ -300,6 +307,8 @@ void leveldbpreload_init(GModule* handle) {
 	g_assert(g_module_symbol(handle, "pth_write", (gpointer*)&worker->ftable.pth_write));
 	g_assert(g_module_symbol(handle, "pth_spawn", (gpointer*)&worker->ftable.pth_spawn));
 	g_assert(g_module_symbol(handle, "pth_usleep", (gpointer*)&worker->ftable.pth_usleep));
+	g_assert(g_module_symbol(handle, "pth_sleep", (gpointer*)&worker->ftable.pth_sleep));
+	g_assert(g_module_symbol(handle, "pth_nanosleep", (gpointer*)&worker->ftable.pth_nanosleep));
 	g_assert(g_module_symbol(handle, "pth_join", (gpointer*)&worker->ftable.pth_join));
 	g_assert(g_module_symbol(handle, "pth_spawn", (gpointer*)&worker->ftable.pth_spawn));
 	g_assert(g_module_symbol(handle, "pth_init", (gpointer*)&worker->ftable.pth_init));
@@ -320,6 +329,8 @@ void leveldbpreload_init(GModule* handle) {
 	SETSYM_OR_FAIL(worker->ftable.read, "read");
 	SETSYM_OR_FAIL(worker->ftable.write, "write");
 	SETSYM_OR_FAIL(worker->ftable.usleep, "usleep");
+	SETSYM_OR_FAIL(worker->ftable.usleep, "nanosleep");
+	SETSYM_OR_FAIL(worker->ftable.usleep, "sleep");
 	SETSYM_OR_FAIL(worker->ftable.write, "write");
 
 	SETSYM_OR_FAIL(worker->ftable.pthread_key_create, "pthread_key_create");
@@ -343,9 +354,9 @@ void leveldbpreload_init(GModule* handle) {
 	SETSYM_OR_FAIL(worker->ftable.pthread_mutex_trylock, "pthread_mutex_trylock");
 	SETSYM_OR_FAIL(worker->ftable.pthread_mutex_unlock, "pthread_mutex_unlock");
 
-	//g_private_set(&leveldbWorkerKey, worker);
-	//assert(g_private_get(&leveldbWorkerKey));
-	leveldbWorkerKey = &worker;
+	g_private_set(&leveldbWorkerKey, worker);
+	assert(g_private_get(&leveldbWorkerKey));
+	//leveldbWorkerKey = &worker;
 
 
 	assert(sizeof(pthread_t) >= sizeof(pth_t));
@@ -456,20 +467,26 @@ ssize_t read(int fp, void *d, size_t s) {
 
 
 int usleep(unsigned int usec) {
-	{
-		LeveldbPreloadWorker* worker = g_private_get(&leveldbWorkerKey);
-		if (worker)
-			real_fprintf(stderr, "in usleep; context:%d (btc:%d)\n", worker->activeContext, EXECTX_BITCOIN);
-	}
 	_FTABLE_GUARD(int, usleep, usec);
-	worker->activeContext = EXECTX_PTH;
-	//usleep(usec);
 	real_fprintf(stderr, "about to pth_sleep\n");
 	int rc = worker->ftable.pth_usleep(usec);
 	worker->activeContext = EXECTX_BITCOIN;
 	return rc;
 }
 
+int nanosleep(const struct timespec *rqtp, struct timespec *rmtp) {
+	_FTABLE_GUARD(int, nanosleep, rqtp, rmtp);
+	int rc = worker->ftable.pth_nanosleep(rqtp, rmtp);
+	worker->activeContext = EXECTX_BITCOIN;
+	return rc;
+}
+
+unsigned int sleep(unsigned int sec) {
+	_FTABLE_GUARD(unsigned int, sleep, sec);
+	int rc = worker->ftable.pth_sleep(sec);
+	worker->activeContext = EXECTX_BITCOIN;
+	return rc;
+}
 
 /**
  * pthreads
@@ -483,7 +500,6 @@ int usleep(unsigned int usec) {
 
 int pthread_create(pthread_t *thread, const pthread_attr_t *attr,
 		   void *(*start_routine) (void *), void *arg) {
-	real_fprintf(stderr, "pthread_entered\n");
         _FTABLE_GUARD(int, pthread_create, thread, attr, start_routine, arg);
 	real_fprintf(stderr, "passing to pth_pthread_create\n");
 	pth_attr_t na;
@@ -555,7 +571,7 @@ int pthread_once(pthread_once_t *once_control, void (*init_routine)(void)) {
         worker->activeContext = EXECTX_BITCOIN;
 	return rc;
 }
-
+/*
 int pthread_key_create(pthread_key_t *key, void (*destructor)(void*)) {
 	_FTABLE_GUARD(int, pthread_key_create, key, destructor);
 	int rc = 0;
@@ -565,6 +581,7 @@ int pthread_key_create(pthread_key_t *key, void (*destructor)(void*)) {
         worker->activeContext = EXECTX_BITCOIN;
 	return rc;
 }
+*/
 
 /*
 int pthread_setspecific(pthread_key_t key, const void *value)  {
@@ -572,7 +589,7 @@ int pthread_setspecific(pthread_key_t key, const void *value)  {
 	SETSYM_OR_FAIL(real, "pthread_setspecific");
 	assert(real);
 	int rc = real(key, value);
-	return rc;*//*
+	return rc;
 	_FTABLE_GUARD(int, pthread_setspecific, key, value);
 	int rc = 0;
 	assert(0);
@@ -582,6 +599,8 @@ int pthread_setspecific(pthread_key_t key, const void *value)  {
         worker->activeContext = EXECTX_BITCOIN;
 	return rc;
 }
+*/
+
 /*
 void *pthread_getspecific(pthread_key_t key) {
 	real_fprintf(stderr, "pthread_getspecific:%d\n", key);
@@ -725,6 +744,7 @@ int pthread_mutex_destroy(pthread_mutex_t *mutex) {
 
 int pthread_mutex_lock(pthread_mutex_t *mutex) {
 	_FTABLE_GUARD(int, pthread_mutex_lock, mutex);
+	real_fprintf(stderr, "pthread_mutex_lock:%p\n", mutex);
 	int rc = 0;
 	if (mutex == NULL) {
 		rc = EINVAL;
@@ -739,6 +759,7 @@ int pthread_mutex_lock(pthread_mutex_t *mutex) {
 
 int pthread_mutex_trylock(pthread_mutex_t *mutex) {
 	_FTABLE_GUARD(int, pthread_mutex_trylock, mutex);
+	real_fprintf(stderr, "pthread_mutex_trylock:%p\n", mutex);
 	int rc = 0;
 	if (mutex == NULL) {
 		rc = EINVAL;
@@ -753,6 +774,7 @@ int pthread_mutex_trylock(pthread_mutex_t *mutex) {
 
 int pthread_mutex_unlock(pthread_mutex_t *mutex) {
 	_FTABLE_GUARD(int, pthread_mutex_unlock, mutex);
+	real_fprintf(stderr, "pthread_mutex_unlock:%p\n", mutex);
 	int rc = 0;
 	if (mutex == NULL) {
 		rc = EINVAL;
