@@ -862,13 +862,15 @@ int pthread_attr_getdetachstate(const pthread_attr_t *attr, int *detachstate) {
 }
 
 int PTHREAD_COND_IS_INITIALIZED(pthread_cond_t cond) {
-	pthread_cond_t empty = PTHREAD_COND_INITIALIZER;
-	return !strncmp((const char *)&cond, (const char *)&empty, sizeof(pthread_cond_t));
+        return !(((pth_cond_t*)&cond)->cn_state & PTH_COND_INITIALIZED);
+	//pthread_cond_t empty = PTHREAD_COND_INITIALIZER;
+	//return !strncmp((const char *)&cond, (const char *)&empty, sizeof(pthread_cond_t));
 }
 
 int PTHREAD_MUTEX_IS_INITIALIZED(pthread_mutex_t mutex) {
-	pthread_mutex_t empty = PTHREAD_MUTEX_INITIALIZER;
-	return !strncmp((const char *)&mutex, (const char *)&empty, sizeof(pthread_mutex_t));
+        return !(((pth_mutex_t*)&mutex)->mx_state & PTH_MUTEX_INITIALIZED);
+	//pthread_mutex_t empty = PTHREAD_MUTEX_INITIALIZER;
+	//return !strncmp((const char *)&mutex, (const char *)&empty, sizeof(pthread_mutex_t));
 }
 
 
@@ -971,10 +973,12 @@ int pthread_mutex_init(pthread_mutex_t *mutex, const pthread_mutexattr_t *attr) 
         worker->activeContext = EXECTX_PTH;
 	int rc = 0;
 	worker->ftable.pth_init();
+	real_fprintf(stderr, "pthread_mutex_init: %p\n", mutex);
 	if (mutex == NULL) {
 		rc = EINVAL;
 	} else if (!worker->ftable.pth_mutex_init((pth_mutex_t *)mutex))
 		rc = errno;
+	if (!rc) assert(!PTHREAD_MUTEX_IS_INITIALIZED(*mutex));
         worker->activeContext = EXECTX_BITCOIN;
 	return rc;
 }
@@ -997,6 +1001,7 @@ int pthread_mutex_lock(pthread_mutex_t *mutex) {
 	if (mutex == NULL) {
 		rc = EINVAL;
 	} else if (PTHREAD_MUTEX_IS_INITIALIZED(*mutex)) {
+		real_fprintf(stderr, "pthread_mutex_lock: initializing\n");
 		worker->activeContext = EXECTX_BITCOIN;
 		if (pthread_mutex_init(mutex, NULL) != OK)
 			rc = errno;
@@ -1036,6 +1041,8 @@ int pthread_mutex_unlock(pthread_mutex_t *mutex) {
 		rc = EINVAL;
 	} else if (PTHREAD_MUTEX_IS_INITIALIZED(*mutex)) {
 		worker->activeContext = EXECTX_BITCOIN;
+		assert(0);
+		real_fprintf(stderr, "pthread_mutex_unlock: initializing\n");
 		if (pthread_mutex_init(mutex, NULL) != OK)
 			rc = errno;
 		worker->activeContext = EXECTX_PTH;
