@@ -6,7 +6,8 @@ boost::condition_variable cond1, cond2;
 boost::mutex lock1, lock2;
 const int iterations = 5;
 
-void producer(void) {
+void producer(void) 
+{
   using namespace std;
   for (int i = 0; i != iterations; ++i) {
     cout << "Producer " << i << endl;
@@ -36,7 +37,6 @@ void doWork()
 {
   using namespace std;
   boost::thread cons(&consumer);
-  return;
   boost::thread prod(&producer);
   prod.join();
   cons.join();
