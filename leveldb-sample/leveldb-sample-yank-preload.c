@@ -136,6 +136,9 @@ typedef int (*pth_key_create_fp)(pth_key_t *, void (*)(void *));
 typedef int (*pth_key_delete_fp)(pth_key_t);
 typedef int (*pth_key_setdata_fp)(pth_key_t, const void *);
 typedef void *(*pth_key_getdata_fp)(pth_key_t);
+typedef pth_attr_t (*pth_attr_of_fp)(pth_t t);
+typedef int (*pth_attr_destroy_fp)(pth_attr_t a);
+typedef int (*pth_attr_set_fp)(pth_attr_t a, int op, ...);
 
 /* epoll */
 typedef int (*epoll_create_fp)(int);
@@ -254,6 +257,10 @@ struct _FunctionTable {
 	pth_key_delete_fp pth_key_delete;
 	pth_key_setdata_fp pth_key_setdata;
 	pth_key_getdata_fp pth_key_getdata;
+
+	pth_attr_of_fp pth_attr_of;
+	pth_attr_set_fp pth_attr_set;
+	pth_attr_destroy_fp pth_attr_destroy;
 	
 
 	/* pthread */
@@ -515,6 +522,9 @@ void leveldbpreload_init(GModule* handle) {
 	g_assert(g_module_symbol(handle, "pth_key_delete", (gpointer*)&worker->ftable.pth_key_delete));
 	g_assert(g_module_symbol(handle, "pth_key_setdata", (gpointer*)&worker->ftable.pth_key_setdata));
 	g_assert(g_module_symbol(handle, "pth_key_getdata", (gpointer*)&worker->ftable.pth_key_getdata));
+	g_assert(g_module_symbol(handle, "pth_attr_of", (gpointer*)&worker->ftable.pth_attr_of));
+	g_assert(g_module_symbol(handle, "pth_attr_set", (gpointer*)&worker->ftable.pth_attr_set));
+	g_assert(g_module_symbol(handle, "pth_attr_destroy", (gpointer*)&worker->ftable.pth_attr_destroy));
 
 	/* lookup system and pthread calls that exist outside of the plug-in module.
 	 * do the lookup here and save to pointer so we dont have to redo the
@@ -689,8 +699,27 @@ int epoll_pwait(int epfd, struct epoll_event *events,
 		int maxevents, int timeout, const sigset_t *ss) 
 	_SHADOW_GUARD(int, epoll_pwait, epfd, events, maxevents, timeout, ss);
 
+
+
+/* pth context keeping track of */
+int pth_shadow_enter() {
+	LeveldbPreloadWorker* worker = leveldbWorkerKey;
+	assert(worker);
+	real_fprintf(stderr, "pth_shadow_enter:%d\n", worker->activeContext);
+	worker->activeContext = EXECTX_BITCOIN;
+	return worker->activeContext;
+	
+}
+void pth_shadow_leave(int ctx) {
+	LeveldbPreloadWorker* worker = leveldbWorkerKey;
+	assert(worker);
+	real_fprintf(stderr, "pth_shadow_leave:%d\n", worker->activeContext);
+	worker->activeContext = ctx;
+}
+
+
 /**
- * pthread
+ * pthread.
  */
 
 /* general success return value */
@@ -727,6 +756,7 @@ int pthread_create(pthread_t *thread, const pthread_attr_t *attr,
 int pthread_join(pthread_t thread, void **retval) {
         _FTABLE_GUARD(int, pthread_join, thread, retval);
         worker->activeContext = EXECTX_PTH;
+	real_fprintf(stderr, "pthread_join to pth\n");
 	int rc;
         if (!worker->ftable.pth_join((pth_t)thread, retval)) {
 		rc = errno;
@@ -746,11 +776,11 @@ int pthread_detach(pthread_t thread) {
         if (thread == 0) {
             errno = EINVAL;
             rc = EINVAL;
-        } else if ((na = pth_attr_of((pth_t)thread)) == NULL ||
-                !pth_attr_set(na, PTH_ATTR_JOINABLE, FALSE)) {
+        } else if ((na = worker->ftable.pth_attr_of((pth_t)thread)) == NULL ||
+                !worker->ftable.pth_attr_set(na, PTH_ATTR_JOINABLE, FALSE)) {
             rc = errno;
         } else {
-            pth_attr_destroy(na);
+            worker->ftable.pth_attr_destroy(na);
         }
 
         worker->activeContext = EXECTX_BITCOIN;
@@ -777,15 +807,10 @@ int pthread_once(pthread_once_t *once_control, void (*init_routine)(void)) {
 }
 
 int pthread_key_create(pthread_key_t *key, void (*destructor)(void*)) {
-	/*pthread_key_create_fp real;
-	SETSYM_OR_FAIL(real, "pthread_key_create");
-	assert(real);
-	return real(key, destructor);*/
 	_FTABLE_GUARD(int, pthread_key_create, key, destructor);
         worker->activeContext = EXECTX_PTH;
 	real_fprintf(stderr, "pthread_key_create:%d\n", key);
-	assert(0);
-	//worker->ftable.pth_init();
+	worker->ftable.pth_init();
 	int rc = 0;
         if (!worker->ftable.pth_key_create((pth_key_t *)key, destructor)) {
 		rc = errno;
@@ -795,19 +820,11 @@ int pthread_key_create(pthread_key_t *key, void (*destructor)(void*)) {
 }
 
 
-
 int pthread_setspecific(pthread_key_t key, const void *value)  {
-	/*pthread_setspecific_fp real;
-	SETSYM_OR_FAIL(real, "pthread_setspecific");
-	assert(real);
-	int rc_ = real(key, value);
-	return rc_;*/
 	_FTABLE_GUARD(int, pthread_setspecific, key, value);
-	assert(0);
         worker->activeContext = EXECTX_PTH;
 	real_fprintf(stderr, "pthread_setspecific:%d\n", key);
 	int rc = 0;
-	//assert(0);
         if (!worker->ftable.pth_key_setdata((pth_key_t)key, value)) {
 		rc = errno;
         }
@@ -817,13 +834,7 @@ int pthread_setspecific(pthread_key_t key, const void *value)  {
 
 
 void *pthread_getspecific(pthread_key_t key) {
-	/*pthread_getspecific_fp real;
-	SETSYM_OR_FAIL(real, "pthread_getspecific");
-	assert(real);
-	void* rc_ = real(key);
-	return rc_;*/
 	_FTABLE_GUARD(void *, pthread_getspecific, key);
-	assert(0);
         worker->activeContext = EXECTX_PTH;
 	real_fprintf(stderr, "pthread_getspecific:%d\n", key);
 	void* pointer = NULL;
@@ -891,9 +902,12 @@ int pthread_cond_signal(pthread_cond_t *cond) {
 	int rc = 0;
 	if (cond == NULL)
 		rc = EINVAL;
-	else if (PTHREAD_COND_IS_INITIALIZED(*cond))
+	else if (PTHREAD_COND_IS_INITIALIZED(*cond)) {
+		worker->activeContext = EXECTX_BITCOIN;
 		if (pthread_cond_init(cond, NULL) != OK)
 			rc = errno;
+		worker->activeContext = EXECTX_PTH;
+	}
 	if (!rc && !worker->ftable.pth_cond_notify((pth_cond_t *)cond, FALSE))
 		rc = errno;
         worker->activeContext = EXECTX_BITCOIN;
@@ -906,9 +920,12 @@ int pthread_cond_broadcast(pthread_cond_t *cond) {
 	int rc = 0;
 	if (cond == NULL)
 		rc = EINVAL;
-	else if (PTHREAD_COND_IS_INITIALIZED(*cond))
+	else if (PTHREAD_COND_IS_INITIALIZED(*cond)) {
+		worker->activeContext = EXECTX_BITCOIN;
 		if (pthread_cond_init(cond, NULL) != OK)
 			rc = errno;
+		worker->activeContext = EXECTX_PTH;
+	}
 	if (!rc && !worker->ftable.pth_cond_notify((pth_cond_t *)cond, TRUE))
 		rc = errno;
         worker->activeContext = EXECTX_BITCOIN;
@@ -921,12 +938,18 @@ int pthread_cond_wait(pthread_cond_t *cond, pthread_mutex_t *mutex) {
 	int rc = 0;
 	if (cond == NULL || mutex == NULL)
 		rc = EINVAL;
-	else if (PTHREAD_COND_IS_INITIALIZED(*cond))
+	else if (PTHREAD_COND_IS_INITIALIZED(*cond)) {
+		worker->activeContext = EXECTX_BITCOIN;
 		if (pthread_cond_init(cond, NULL) != OK)
 			rc = errno;
-	if (!rc && PTHREAD_MUTEX_IS_INITIALIZED(*mutex))
+		worker->activeContext = EXECTX_PTH;
+	}
+	if (!rc && PTHREAD_MUTEX_IS_INITIALIZED(*mutex)) {
+		worker->activeContext = EXECTX_BITCOIN;
 		if (pthread_mutex_init(mutex, NULL) != OK)
 			rc = errno;
+		worker->activeContext = EXECTX_PTH;
+	}
 	if (!rc && !worker->ftable.pth_cond_await((pth_cond_t *)cond, (pth_mutex_t *)mutex, NULL))
 		rc = errno;
         worker->activeContext = EXECTX_BITCOIN;
@@ -973,9 +996,12 @@ int pthread_mutex_lock(pthread_mutex_t *mutex) {
 	int rc = 0;
 	if (mutex == NULL) {
 		rc = EINVAL;
-	} else if (PTHREAD_MUTEX_IS_INITIALIZED(*mutex))
+	} else if (PTHREAD_MUTEX_IS_INITIALIZED(*mutex)) {
+		worker->activeContext = EXECTX_BITCOIN;
 		if (pthread_mutex_init(mutex, NULL) != OK)
 			rc = errno;
+		worker->activeContext = EXECTX_PTH;
+	}
 	if (!rc && !worker->ftable.pth_mutex_acquire((pth_mutex_t *)mutex, FALSE, NULL))
 		rc = errno;
         worker->activeContext = EXECTX_BITCOIN;
@@ -989,9 +1015,12 @@ int pthread_mutex_trylock(pthread_mutex_t *mutex) {
 	int rc = 0;
 	if (mutex == NULL) {
 		rc = EINVAL;
-	} else if (PTHREAD_MUTEX_IS_INITIALIZED(*mutex))
+	} else if (PTHREAD_MUTEX_IS_INITIALIZED(*mutex)) {
+		worker->activeContext = EXECTX_BITCOIN;
 		if (pthread_mutex_init(mutex, NULL) != OK)
 			rc = errno;
+		worker->activeContext = EXECTX_PTH;
+	}
 	if (!rc && !worker->ftable.pth_mutex_acquire((pth_mutex_t *)mutex, TRUE, NULL))
 		rc = errno;
         worker->activeContext = EXECTX_BITCOIN;
@@ -1005,9 +1034,12 @@ int pthread_mutex_unlock(pthread_mutex_t *mutex) {
 	int rc = 0;
 	if (mutex == NULL) {
 		rc = EINVAL;
-	} else if (PTHREAD_MUTEX_IS_INITIALIZED(*mutex))
+	} else if (PTHREAD_MUTEX_IS_INITIALIZED(*mutex)) {
+		worker->activeContext = EXECTX_BITCOIN;
 		if (pthread_mutex_init(mutex, NULL) != OK)
 			rc = errno;
+		worker->activeContext = EXECTX_PTH;
+	}
 	if (!rc && !worker->ftable.pth_mutex_release((pth_mutex_t *)mutex))
 		rc = errno;
         worker->activeContext = EXECTX_BITCOIN;

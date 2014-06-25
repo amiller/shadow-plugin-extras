@@ -35,10 +35,9 @@ void consumer(void)
 void doWork()
 {
   using namespace std;
-
   boost::thread cons(&consumer);
+  return;
   boost::thread prod(&producer);
-
   prod.join();
   cons.join();
 }
