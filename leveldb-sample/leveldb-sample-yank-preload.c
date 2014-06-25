@@ -179,7 +179,7 @@ typedef int (*pthread_mutex_unlock_fp)(pthread_mutex_t*);
  * the use this key to retrieve this library when intercepting functions from tor.
  */
 //static GPrivate leveldbWorkerKey = G_PRIVATE_INIT(g_free);
-static __thread void * leveldbWorkerKey = NULL;
+static __thread void * pluginWorkerKey = NULL;
 #define g_private_get(ptr) (*(ptr))
 
 /* track if we are in a recursive loop to avoid infinite recursion.
@@ -369,7 +369,7 @@ typedef ssize_t (*sendto_fp)(int, const void *, size_t, int, const struct sockad
 	    __sync_fetch_and_sub(&isRecursive, 1);\
             return rc;\
     }\
-    LeveldbPreloadWorker* worker = g_private_get(&leveldbWorkerKey);\
+    LeveldbPreloadWorker* worker = g_private_get(&pluginWorkerKey);\
     if (!worker) {\
 	    func##_fp real;\
 	    SETSYM_OR_FAIL(real, #func);\
@@ -377,7 +377,7 @@ typedef ssize_t (*sendto_fp)(int, const void *, size_t, int, const struct sockad
             __sync_fetch_and_sub(&isRecursive, 1);\
 	    return rc;\
     }\
-    if (worker->activeContext != EXECTX_BITCOIN) {\
+    if (worker->activeContext != EXECTX_PLUGIN) {\
 	    rctype rc = worker->ftable.func(__VA_ARGS__);\
 	    __sync_fetch_and_sub(&isRecursive, 1);\
 	    return rc;\
@@ -392,7 +392,7 @@ typedef ssize_t (*sendto_fp)(int, const void *, size_t, int, const struct sockad
 	    __sync_fetch_and_sub(&isRecursive, 1);\
             return rc;\
     }\
-    LeveldbPreloadWorker* worker = g_private_get(&leveldbWorkerKey);\
+    LeveldbPreloadWorker* worker = g_private_get(&pluginWorkerKey);\
     if (!worker) {\
 	    func##_fp real;\
 	    SETSYM_OR_FAIL_V(real, #func, version);	\
@@ -400,7 +400,7 @@ typedef ssize_t (*sendto_fp)(int, const void *, size_t, int, const struct sockad
             __sync_fetch_and_sub(&isRecursive, 1);\
 	    return rc;\
     }\
-    if (worker->activeContext != EXECTX_BITCOIN) {\
+    if (worker->activeContext != EXECTX_PLUGIN) {\
 	    rctype rc = worker->ftable.func(__VA_ARGS__);\
 	    __sync_fetch_and_sub(&isRecursive, 1);\
 	    return rc;\
@@ -411,14 +411,14 @@ typedef ssize_t (*sendto_fp)(int, const void *, size_t, int, const struct sockad
 		_FTABLE_GUARD(rctype, func, __VA_ARGS__);	\
 		worker->activeContext = EXECTX_PTH;		\
 		int rc = worker->ftable.func(__VA_ARGS__);	\
-		worker->activeContext = EXECTX_BITCOIN;		\
+		worker->activeContext = EXECTX_PLUGIN;		\
 		return rc;					\
 	}							\
 
 /*
 #define _SHD_DL_BODY(func, ...) {					\
       func##_fp real;							\
-      LeveldbPreloadWorker* worker = g_private_get(&leveldbWorkerKey);	\
+      LeveldbPreloadWorker* worker = g_private_get(&pluginWorkerKey);	\
       if (worker) {							\
           ExecutionContext e = worker->activeContext;			\
           worker->activeContext = EXECTX_PTH;				\
@@ -434,7 +434,7 @@ typedef ssize_t (*sendto_fp)(int, const void *, size_t, int, const struct sockad
 */
 #define _SHD_DL_BODY(func, ...) \
   {									\
-    LeveldbPreloadWorker* worker = g_private_get(&leveldbWorkerKey);	\
+    LeveldbPreloadWorker* worker = g_private_get(&pluginWorkerKey);	\
     assert(worker);							\
     ExecutionContext e = worker->activeContext;				\
     worker->activeContext = EXECTX_PTH;					\
@@ -471,7 +471,7 @@ ssize_t real_fprintf(FILE *stream, const char *format, ...) {
 	va_start(ap, format);
 	int s = vsnprintf(buf, sizeof(buf), format, ap);
 	va_end(ap);
-	LeveldbPreloadWorker* worker = g_private_get(&leveldbWorkerKey);
+	LeveldbPreloadWorker* worker = g_private_get(&pluginWorkerKey);
 	if (worker) {
 		ExecutionContext e = worker->activeContext;
 		worker->activeContext = EXECTX_SHADOW;
@@ -562,8 +562,8 @@ void leveldbpreload_init(GModule* handle) {
 
 
 	/* pthread */
-	SETSYM_OR_FAIL(worker->ftable.pthread_key_create, "pthread_key_create");
-	SETSYM_OR_FAIL(worker->ftable.pthread_cond_init, "pthread_cond_init");
+	_WORKER_SET(pthread_key_create);
+	_WORKER_SET(pthread_cond_init);
 	SETSYM_OR_FAIL(worker->ftable.pthread_create, "pthread_create");
 	SETSYM_OR_FAIL(worker->ftable.pthread_detach, "pthread_detach");
 	SETSYM_OR_FAIL(worker->ftable.pthread_join, "pthread_join");
@@ -583,9 +583,9 @@ void leveldbpreload_init(GModule* handle) {
 	SETSYM_OR_FAIL(worker->ftable.pthread_mutex_trylock, "pthread_mutex_trylock");
 	SETSYM_OR_FAIL(worker->ftable.pthread_mutex_unlock, "pthread_mutex_unlock");
 
-	//g_private_set(&leveldbWorkerKey, worker);
-	//assert(g_private_get(&leveldbWorkerKey));
-	leveldbWorkerKey = worker;
+	//g_private_set(&pluginWorkerKey, worker);
+	//assert(g_private_get(&pluginWorkerKey));
+	pluginWorkerKey = worker;
 
 
 	assert(sizeof(pthread_t) >= sizeof(pth_t));
@@ -597,23 +597,23 @@ void leveldbpreload_init(GModule* handle) {
 
 void leveldbpreload_setContext(ExecutionContext ctx) {
 	//real_fprintf(stderr, "context2\n");
-	LeveldbPreloadWorker* worker = g_private_get(&leveldbWorkerKey);
+	LeveldbPreloadWorker* worker = g_private_get(&pluginWorkerKey);
 	worker->activeContext = ctx;
 	//real_fprintf(stderr, "context1\n");
 }
 
 
 ssize_t write(int fp, const void *d, size_t s) {
-	LeveldbPreloadWorker* worker = g_private_get(&leveldbWorkerKey);
+	LeveldbPreloadWorker* worker = g_private_get(&pluginWorkerKey);
 	ssize_t rc = 0;
 	//real_fprintf(stderr, "write %d\n", worker->activeContext);
 
-	if(worker && worker->activeContext == EXECTX_BITCOIN) {
+	if(worker && worker->activeContext == EXECTX_PLUGIN) {
 		real_fprintf(stderr, "bitcoin mode passing to pth\n");
 		assert(worker->ftable.pth_write);
 		worker->activeContext = EXECTX_PTH;
 		rc = worker->ftable.pth_write(fp, d, s);
-		worker->activeContext = EXECTX_BITCOIN;
+		worker->activeContext = EXECTX_PLUGIN;
 	} else if (worker) {
 		// dont mess with shadow's calls, and dont change context 
 		rc = worker->ftable.write(fp, d, s);
@@ -628,13 +628,13 @@ ssize_t write(int fp, const void *d, size_t s) {
 }
 
 ssize_t read(int fp, void *d, size_t s) {
-	LeveldbPreloadWorker* worker = g_private_get(&leveldbWorkerKey);
+	LeveldbPreloadWorker* worker = g_private_get(&pluginWorkerKey);
 	ssize_t rc = 0;
-	if(worker && worker->activeContext == EXECTX_BITCOIN) {
+	if(worker && worker->activeContext == EXECTX_PLUGIN) {
 		real_fprintf(stderr, "going to pth\n");
 		worker->activeContext = EXECTX_PTH;
 		rc = worker->ftable.pth_read(fp, d, s);
-		worker->activeContext = EXECTX_BITCOIN;
+		worker->activeContext = EXECTX_PLUGIN;
 	} else if (worker) {
 		real_fprintf(stderr, "passing to shadow\n");
 		// dont mess with shadow's calls, and dont change context 
@@ -651,14 +651,14 @@ ssize_t read(int fp, void *d, size_t s) {
 int close(int fd) _SHADOW_GUARD(int, close, fd);
 
 int usleep(unsigned int usec) {
-  LeveldbPreloadWorker* worker_ = g_private_get(&leveldbWorkerKey);
+  LeveldbPreloadWorker* worker_ = g_private_get(&pluginWorkerKey);
     real_fprintf(stderr, "usleep: activeContext:%d\n", worker_->activeContext);
 
 	_FTABLE_GUARD(int, usleep, usec);
         worker->activeContext = EXECTX_PTH;
 	real_fprintf(stderr, "about to pth_sleep\n");
 	int rc = worker->ftable.pth_usleep(usec);
-	worker->activeContext = EXECTX_BITCOIN;
+	worker->activeContext = EXECTX_PLUGIN;
 	return rc;
 }
 
@@ -667,7 +667,7 @@ int nanosleep(const struct timespec *rqtp, struct timespec *rmtp) {
         worker->activeContext = EXECTX_PTH;
 	real_fprintf(stderr, "about to pth_nanosleep\n");
 	int rc = worker->ftable.pth_nanosleep(rqtp, rmtp);
-	worker->activeContext = EXECTX_BITCOIN;
+	worker->activeContext = EXECTX_PLUGIN;
 	return rc;
 }
 
@@ -675,7 +675,7 @@ unsigned int sleep(unsigned int sec) {
 	_FTABLE_GUARD(unsigned int, sleep, sec);
         worker->activeContext = EXECTX_PTH;
 	int rc = worker->ftable.pth_sleep(sec);
-	worker->activeContext = EXECTX_BITCOIN;
+	worker->activeContext = EXECTX_PLUGIN;
 	return rc;
 }
 
@@ -703,15 +703,15 @@ int epoll_pwait(int epfd, struct epoll_event *events,
 
 /* pth context keeping track of */
 int pth_shadow_enter() {
-	LeveldbPreloadWorker* worker = leveldbWorkerKey;
+	LeveldbPreloadWorker* worker = pluginWorkerKey;
 	assert(worker);
 	real_fprintf(stderr, "pth_shadow_enter:%d\n", worker->activeContext);
-	worker->activeContext = EXECTX_BITCOIN;
+	worker->activeContext = EXECTX_PLUGIN;
 	return worker->activeContext;
 	
 }
 void pth_shadow_leave(int ctx) {
-	LeveldbPreloadWorker* worker = leveldbWorkerKey;
+	LeveldbPreloadWorker* worker = pluginWorkerKey;
 	assert(worker);
 	real_fprintf(stderr, "pth_shadow_leave:%d\n", worker->activeContext);
 	worker->activeContext = ctx;
@@ -749,7 +749,7 @@ int pthread_create(pthread_t *thread, const pthread_attr_t *attr,
 		}
 	}
 	real_fprintf(stderr, "returning from pth_pthread_create\n");
-	worker->activeContext = EXECTX_BITCOIN;
+	worker->activeContext = EXECTX_PLUGIN;
 	return rc;
 }
 
@@ -763,7 +763,7 @@ int pthread_join(pthread_t thread, void **retval) {
         } else if(retval != NULL && *retval == PTH_CANCELED) {
 		*retval = PTHREAD_CANCELED;
         }	
-        worker->activeContext = EXECTX_BITCOIN;
+        worker->activeContext = EXECTX_PLUGIN;
 	return rc;
 }
 
@@ -783,7 +783,7 @@ int pthread_detach(pthread_t thread) {
             worker->ftable.pth_attr_destroy(na);
         }
 
-        worker->activeContext = EXECTX_BITCOIN;
+        worker->activeContext = EXECTX_PLUGIN;
 	return rc;
 }
 
@@ -796,13 +796,13 @@ int pthread_once(pthread_once_t *once_control, void (*init_routine)(void)) {
 		rc = EINVAL;
         } else {
 		if (*once_control != 1) {
-			worker->activeContext = EXECTX_BITCOIN;
+			worker->activeContext = EXECTX_PLUGIN;
 			init_routine();
 			worker->activeContext = EXECTX_PTH;
 		}
 		*once_control = 1;
         }
-        worker->activeContext = EXECTX_BITCOIN;
+        worker->activeContext = EXECTX_PLUGIN;
 	return rc;
 }
 
@@ -815,7 +815,7 @@ int pthread_key_create(pthread_key_t *key, void (*destructor)(void*)) {
         if (!worker->ftable.pth_key_create((pth_key_t *)key, destructor)) {
 		rc = errno;
         }
-        worker->activeContext = EXECTX_BITCOIN;
+        worker->activeContext = EXECTX_PLUGIN;
 	return rc;
 }
 
@@ -828,7 +828,7 @@ int pthread_setspecific(pthread_key_t key, const void *value)  {
         if (!worker->ftable.pth_key_setdata((pth_key_t)key, value)) {
 		rc = errno;
         }
-        worker->activeContext = EXECTX_BITCOIN;
+        worker->activeContext = EXECTX_PLUGIN;
 	return rc;
 }
 
@@ -839,7 +839,7 @@ void *pthread_getspecific(pthread_key_t key) {
 	real_fprintf(stderr, "pthread_getspecific:%d\n", key);
 	void* pointer = NULL;
         pointer = worker->ftable.pth_key_getdata((pth_key_t)key);
-        worker->activeContext = EXECTX_BITCOIN;
+        worker->activeContext = EXECTX_PLUGIN;
 	return pointer;
 }
 
@@ -848,7 +848,7 @@ int pthread_attr_setdetachstate(pthread_attr_t *attr, int detachstate) {
         worker->activeContext = EXECTX_PTH;
 	int rc = 0;
 	assert(0);
-        worker->activeContext = EXECTX_BITCOIN;
+        worker->activeContext = EXECTX_PLUGIN;
 	return rc;
 }
 
@@ -857,7 +857,7 @@ int pthread_attr_getdetachstate(const pthread_attr_t *attr, int *detachstate) {
         worker->activeContext = EXECTX_PTH;
 	int rc = 0;
 	assert(0);
-        worker->activeContext = EXECTX_BITCOIN;
+        worker->activeContext = EXECTX_PLUGIN;
 	return rc;
 }
 
@@ -884,7 +884,7 @@ int pthread_cond_init(pthread_cond_t *cond, const pthread_condattr_t *attr)
 		rc = EINVAL;
 	else if (!worker->ftable.pth_cond_init((pth_cond_t *)cond))
 		rc = errno;
-        worker->activeContext = EXECTX_BITCOIN;
+        worker->activeContext = EXECTX_PLUGIN;
 	return rc;
 }
 
@@ -894,7 +894,7 @@ int pthread_cond_destroy(pthread_cond_t *cond) {
 	int rc = 0;
 	if (cond == NULL)
 		rc = EINVAL;
-        worker->activeContext = EXECTX_BITCOIN;
+        worker->activeContext = EXECTX_PLUGIN;
 	return rc;
 }
 
@@ -905,14 +905,14 @@ int pthread_cond_signal(pthread_cond_t *cond) {
 	if (cond == NULL)
 		rc = EINVAL;
 	else if (PTHREAD_COND_IS_INITIALIZED(*cond)) {
-		worker->activeContext = EXECTX_BITCOIN;
+		worker->activeContext = EXECTX_PLUGIN;
 		if (pthread_cond_init(cond, NULL) != OK)
 			rc = errno;
 		worker->activeContext = EXECTX_PTH;
 	}
 	if (!rc && !worker->ftable.pth_cond_notify((pth_cond_t *)cond, FALSE))
 		rc = errno;
-        worker->activeContext = EXECTX_BITCOIN;
+        worker->activeContext = EXECTX_PLUGIN;
 	return rc;
 }
 
@@ -923,14 +923,14 @@ int pthread_cond_broadcast(pthread_cond_t *cond) {
 	if (cond == NULL)
 		rc = EINVAL;
 	else if (PTHREAD_COND_IS_INITIALIZED(*cond)) {
-		worker->activeContext = EXECTX_BITCOIN;
+		worker->activeContext = EXECTX_PLUGIN;
 		if (pthread_cond_init(cond, NULL) != OK)
 			rc = errno;
 		worker->activeContext = EXECTX_PTH;
 	}
 	if (!rc && !worker->ftable.pth_cond_notify((pth_cond_t *)cond, TRUE))
 		rc = errno;
-        worker->activeContext = EXECTX_BITCOIN;
+        worker->activeContext = EXECTX_PLUGIN;
 	return rc;
 }
 
@@ -941,20 +941,20 @@ int pthread_cond_wait(pthread_cond_t *cond, pthread_mutex_t *mutex) {
 	if (cond == NULL || mutex == NULL)
 		rc = EINVAL;
 	else if (PTHREAD_COND_IS_INITIALIZED(*cond)) {
-		worker->activeContext = EXECTX_BITCOIN;
+		worker->activeContext = EXECTX_PLUGIN;
 		if (pthread_cond_init(cond, NULL) != OK)
 			rc = errno;
 		worker->activeContext = EXECTX_PTH;
 	}
 	if (!rc && PTHREAD_MUTEX_IS_INITIALIZED(*mutex)) {
-		worker->activeContext = EXECTX_BITCOIN;
+		worker->activeContext = EXECTX_PLUGIN;
 		if (pthread_mutex_init(mutex, NULL) != OK)
 			rc = errno;
 		worker->activeContext = EXECTX_PTH;
 	}
 	if (!rc && !worker->ftable.pth_cond_await((pth_cond_t *)cond, (pth_mutex_t *)mutex, NULL))
 		rc = errno;
-        worker->activeContext = EXECTX_BITCOIN;
+        worker->activeContext = EXECTX_PLUGIN;
 	return rc;
 }
 
@@ -964,7 +964,7 @@ int pthread_cond_timedwait(pthread_cond_t *cond, pthread_mutex_t *mutex,
         worker->activeContext = EXECTX_PTH;
 	int rc = 0;
 	assert(0);
-        worker->activeContext = EXECTX_BITCOIN;
+        worker->activeContext = EXECTX_PLUGIN;
 	return rc;
 }
 
@@ -979,7 +979,7 @@ int pthread_mutex_init(pthread_mutex_t *mutex, const pthread_mutexattr_t *attr) 
 	} else if (!worker->ftable.pth_mutex_init((pth_mutex_t *)mutex))
 		rc = errno;
 	if (!rc) assert(!PTHREAD_MUTEX_IS_INITIALIZED(*mutex));
-        worker->activeContext = EXECTX_BITCOIN;
+        worker->activeContext = EXECTX_PLUGIN;
 	return rc;
 }
 
@@ -989,7 +989,7 @@ int pthread_mutex_destroy(pthread_mutex_t *mutex) {
 	int rc = 0;
 	if (mutex == NULL)
 		rc = EINVAL;
-        worker->activeContext = EXECTX_BITCOIN;
+        worker->activeContext = EXECTX_PLUGIN;
 	return rc;
 }
 
@@ -1002,14 +1002,14 @@ int pthread_mutex_lock(pthread_mutex_t *mutex) {
 		rc = EINVAL;
 	} else if (PTHREAD_MUTEX_IS_INITIALIZED(*mutex)) {
 		real_fprintf(stderr, "pthread_mutex_lock: initializing\n");
-		worker->activeContext = EXECTX_BITCOIN;
+		worker->activeContext = EXECTX_PLUGIN;
 		if (pthread_mutex_init(mutex, NULL) != OK)
 			rc = errno;
 		worker->activeContext = EXECTX_PTH;
 	}
 	if (!rc && !worker->ftable.pth_mutex_acquire((pth_mutex_t *)mutex, FALSE, NULL))
 		rc = errno;
-        worker->activeContext = EXECTX_BITCOIN;
+        worker->activeContext = EXECTX_PLUGIN;
 	return rc;
 }
 
@@ -1021,14 +1021,14 @@ int pthread_mutex_trylock(pthread_mutex_t *mutex) {
 	if (mutex == NULL) {
 		rc = EINVAL;
 	} else if (PTHREAD_MUTEX_IS_INITIALIZED(*mutex)) {
-		worker->activeContext = EXECTX_BITCOIN;
+		worker->activeContext = EXECTX_PLUGIN;
 		if (pthread_mutex_init(mutex, NULL) != OK)
 			rc = errno;
 		worker->activeContext = EXECTX_PTH;
 	}
 	if (!rc && !worker->ftable.pth_mutex_acquire((pth_mutex_t *)mutex, TRUE, NULL))
 		rc = errno;
-        worker->activeContext = EXECTX_BITCOIN;
+        worker->activeContext = EXECTX_PLUGIN;
 	return rc;
 }
 
@@ -1040,7 +1040,7 @@ int pthread_mutex_unlock(pthread_mutex_t *mutex) {
 	if (mutex == NULL) {
 		rc = EINVAL;
 	} else if (PTHREAD_MUTEX_IS_INITIALIZED(*mutex)) {
-		worker->activeContext = EXECTX_BITCOIN;
+		worker->activeContext = EXECTX_PLUGIN;
 		assert(0);
 		real_fprintf(stderr, "pthread_mutex_unlock: initializing\n");
 		if (pthread_mutex_init(mutex, NULL) != OK)
@@ -1049,14 +1049,15 @@ int pthread_mutex_unlock(pthread_mutex_t *mutex) {
 	}
 	if (!rc && !worker->ftable.pth_mutex_release((pth_mutex_t *)mutex))
 		rc = errno;
-        worker->activeContext = EXECTX_BITCOIN;
+        worker->activeContext = EXECTX_PLUGIN;
 	return rc;
 }
 
 
 
 
-/* Inception! */
+/* Inception! g_private_get is special because it's called by shadow before deciding
+   whether to look up symbols again from the beginning. */
 #ifdef g_private_get
 #undef g_private_get
 #endif
@@ -1066,15 +1067,15 @@ gpointer g_private_get(GPrivate *key) {
 	if(__sync_fetch_and_add(&isRecursive, 1)) {
 		g_private_get_fp real;
 		real = dlsym(RTLD_NEXT, "g_private_get");
-		gboolean rc = real(key);
+		gpointer rc = real(key);
 		__sync_fetch_and_sub(&isRecursive, 1);
 		return rc;
 	}
-	LeveldbPreloadWorker* worker = leveldbWorkerKey;
+	LeveldbPreloadWorker* worker = pluginWorkerKey;
 	if (!worker) {
 		g_private_get_fp real;
 		real = dlsym(RTLD_NEXT, "g_private_get");
-		gboolean rc = real(key);
+		gpointer rc = real(key);
 		__sync_fetch_and_sub(&isRecursive, 1);
 		return rc;
 	}
@@ -1082,7 +1083,7 @@ gpointer g_private_get(GPrivate *key) {
 	worker->activeContext = EXECTX_SHADOW;
 	g_private_get_fp real;
 	real = dlsym(RTLD_NEXT, "g_private_get");
-	gboolean rc = real(key);
+	gpointer rc = real(key);
 	worker->activeContext = e;
 	__sync_fetch_and_sub(&isRecursive, 1);
 	return rc;
