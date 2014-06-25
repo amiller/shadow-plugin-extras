@@ -10,7 +10,7 @@ void producer(void) {
   using namespace std;
   for (int i = 0; i != iterations; ++i) {
     cout << "Producer " << i << endl;
-    boost::this_thread::sleep_for(boost::chrono::milliseconds(200));
+    boost::this_thread::sleep_for(boost::chrono::milliseconds(1000));
     cond1.notify_one();
     {
       boost::unique_lock<boost::mutex> lock(lock2);

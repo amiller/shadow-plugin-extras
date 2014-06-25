@@ -53,15 +53,11 @@ static int _timeval_subtract (result, x, y)
 
 /* shadow is notifying us that some descriptors are ready to read/write */
 static void leveldbplugin_ready() {
-	leveldbpreload_setContext(EXECTX_BITCOIN);
+	leveldbpreload_setContext(EXECTX_SHADOW);
 
 	static int epd = -1;
-
 	struct epoll_event ev = {};
-
-	leveldbpreload_setContext(EXECTX_SHADOW);
 	shadowlib.log(SHADOW_LOG_LEVEL_MESSAGE, __FUNCTION__, "Master activated");
-	leveldbpreload_setContext(EXECTX_BITCOIN);
 
 	epoll_wait(epd, &ev, 1, 0); // try to consume an event
 
@@ -74,26 +70,30 @@ static void leveldbplugin_ready() {
 
 	//leveldbpreload_setContext(EXECTX_PTH);
 	pth_attr_set(pth_attr_of(pth_self()), PTH_ATTR_PRIO, PTH_PRIO_MIN);
+	
+	leveldbpreload_setContext(EXECTX_BITCOIN);
+	real_fprintf(stderr, "yielding\n");
 	pth_yield(NULL); // go visit the scheduler at least once
+	leveldbpreload_setContext(EXECTX_SHADOW);
+
 	while (pth_ctrl(PTH_CTRL_GETTHREADS_READY | PTH_CTRL_GETTHREADS_NEW)) {
 		//pth_ctrl(PTH_CTRL_DUMPSTATE, stderr);
 		pth_attr_set(pth_attr_of(pth_self()), PTH_ATTR_PRIO, PTH_PRIO_MIN);
+		leveldbpreload_setContext(EXECTX_BITCOIN);
+		real_fprintf(stderr, "yielding inside\n");
 		pth_yield(NULL);
+		leveldbpreload_setContext(EXECTX_SHADOW);
 	}
 	epd = pth_waiting_epoll();
-	leveldbpreload_setContext(EXECTX_BITCOIN);
 	if (epd > -1) {
 		ev.data.fd = epd;
 		epoll_ctl(main_epd, EPOLL_CTL_ADD, epd, &ev);
 	}
-
-	leveldbpreload_setContext(EXECTX_SHADOW);
 	shadowlib.log(SHADOW_LOG_LEVEL_MESSAGE, __FUNCTION__, "Master exiting");
 
 	/* Figure out when the next timer would be */
 	//leveldbpreload_setContext(EXECTX_PTH);
 	struct timeval timeout = pth_waiting_timeout();
-	leveldbpreload_setContext(EXECTX_BITCOIN);
 	if (!(timeout.tv_sec == 0 && timeout.tv_usec == 0)) {
 		struct timeval now, delay;
 		gettimeofday(&now, NULL);
@@ -101,13 +101,9 @@ static void leveldbplugin_ready() {
 		if (_timeval_subtract(&delay, &timeout, &now)) ms = 0;
 		else ms = 1 + delay.tv_sec*1000 + (delay.tv_usec+1)/1000;
 
-		leveldbpreload_setContext(EXECTX_SHADOW);
 		shadowlib.log(SHADOW_LOG_LEVEL_DEBUG, __FUNCTION__, "Registering a callback for %d ms", ms);
 		shadowlib.createCallback((ShadowPluginCallbackFunc) leveldbplugin_ready, NULL, ms);
-		leveldbpreload_setContext(EXECTX_BITCOIN);
 	}
-
-	leveldbpreload_setContext(EXECTX_SHADOW);
 }
 
 /* shadow is creating a new instance of this plug-in as a node in
@@ -131,15 +127,13 @@ static void leveldbplugin_new(int argc, char* argv[]) {
 	 * the value of helloNodeInstance will be different for every node, because
 	 * we did not set it in __shadow_plugin_init__(). this is desirable, because
 	 * each node needs its own application state.
-	 */
-	leveldbpreload_setContext(EXECTX_BITCOIN);
-	//leveldbpreload_setContext(EXECTX_PTH);
+	 */	
+        leveldbpreload_setContext(EXECTX_PTH);
 	pth_init();
 
 	//helloNodeInstance = hello_new(argc, argv, shadowlib.log);
 	struct args_t args = {argc, argv, shadowlib.log};
 	pth_t t = pth_spawn(PTH_ATTR_DEFAULT, &_hello_new, &args);
-
 	leveldbpreload_setContext(EXECTX_BITCOIN);
 
 	// Jog the threads once
