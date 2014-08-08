@@ -1,6 +1,10 @@
 // A producer consumer queue
 #include <boost/thread/thread.hpp>
+#include <boost/filesystem.hpp>
+#include <boost/interprocess/sync/file_lock.hpp>
 #include <iostream>
+#include <cstdio>
+#include <sys/file.h>
 
 boost::condition_variable cond1, cond2;
 boost::mutex lock1, lock2;

@@ -18,14 +18,23 @@
 
 typedef struct _Hello Hello;
 
-extern "C" void hello_new(int argc, char* argv[], ShadowLogFunc slogf);
-
 // Extern for the thread toy
 extern void doWork(void);
 
 #include <string.h>
 
 #define HELLO_PORT 12346
+
+
+class A {
+public:
+	int val;
+	A(int x) {
+		//printf("A is initialized\n");
+		this->val = 1337;
+	}
+};
+static const A myA(1);
 
 /* all state for hello is stored here */
 struct _Hello {
@@ -66,7 +75,7 @@ void *doNothing(void *) {
 static int _hello_startClient(Hello* h) {
 	//h->client.serverHostName = strndup(serverHostname, (size_t)50);
 	write(2, "doing work\n", 12);
-
+	fprintf(stderr, "A:%d\n", myA.val);
 	pthread_t thread;
 	pthread_create(&thread, NULL, &doNothing, NULL);
 	void *result;
@@ -255,6 +264,7 @@ void hello_free(Hello* h) {
 	free(h);
 }
 
+extern "C"
 void hello_new(int argc, char *argv[], ShadowLogFunc slogf) {
 	assert(slogf);
 
@@ -312,3 +322,4 @@ void hello_new(int argc, char *argv[], ShadowLogFunc slogf) {
 		return;
 	}
 }
+

@@ -8,8 +8,7 @@
 /* functions that interface into shadow */
 ShadowFunctionTable shadowlib;
 
-/* our opaque instance of the hello node */
-Hello* helloNodeInstance = NULL;
+#define ACTIVE_PLUGIN PLUGIN_BITCOIND
 
 static int main_epd = -1;
 
@@ -71,7 +70,7 @@ static void leveldbplugin_ready() {
 	//leveldbpreload_setContext(EXECTX_PTH);
 	pth_attr_set(pth_attr_of(pth_self()), PTH_ATTR_PRIO, PTH_PRIO_MIN);
 	
-	leveldbpreload_setContext(EXECTX_BITCOIN);
+	leveldbpreload_setContext(EXECTX_PLUGIN);
 	real_fprintf(stderr, "yielding\n");
 	pth_yield(NULL); // go visit the scheduler at least once
 	leveldbpreload_setContext(EXECTX_SHADOW);
@@ -79,7 +78,7 @@ static void leveldbplugin_ready() {
 	while (pth_ctrl(PTH_CTRL_GETTHREADS_READY | PTH_CTRL_GETTHREADS_NEW)) {
 		//pth_ctrl(PTH_CTRL_DUMPSTATE, stderr);
 		pth_attr_set(pth_attr_of(pth_self()), PTH_ATTR_PRIO, PTH_PRIO_MIN);
-		leveldbpreload_setContext(EXECTX_BITCOIN);
+		leveldbpreload_setContext(EXECTX_PLUGIN);
 		real_fprintf(stderr, "yielding inside\n");
 		pth_yield(NULL);
 		leveldbpreload_setContext(EXECTX_SHADOW);
@@ -111,12 +110,15 @@ static void leveldbplugin_ready() {
  */
 struct args_t {int argc; char **argv; ShadowLogFunc slogf;};
 
-void _hello_new(struct args_t *args) {
+#include <sys/file.h>
+
+void *_hello_new(struct args_t *args) {
 	assert(args);
 	int argc = args->argc;
 	char **argv = args->argv;
 	ShadowLogFunc slogf = args->slogf;
 	hello_new(argc, argv, slogf);
+	return 0;
 }
 
 static void leveldbplugin_new(int argc, char* argv[]) {
@@ -133,8 +135,8 @@ static void leveldbplugin_new(int argc, char* argv[]) {
 
 	//helloNodeInstance = hello_new(argc, argv, shadowlib.log);
 	struct args_t args = {argc, argv, shadowlib.log};
-	pth_t t = pth_spawn(PTH_ATTR_DEFAULT, &_hello_new, &args);
-	leveldbpreload_setContext(EXECTX_BITCOIN);
+	pth_t t = pth_spawn(PTH_ATTR_DEFAULT, (void *(*)(void*))&_hello_new, &args);
+	leveldbpreload_setContext(EXECTX_PLUGIN);
 
 	// Jog the threads once
 	leveldbplugin_ready();

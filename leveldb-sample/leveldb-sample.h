@@ -21,10 +21,6 @@
 
 #include <shd-library.h>
 
-typedef enum _ExecutionContext ExecutionContext;
-enum _ExecutionContext {
-    EXECTX_NONE, EXECTX_PLUGIN, EXECTX_PTH, EXECTX_SHADOW,
-};
 
 void leveldbpreload_init(GModule* handle);
 void leveldbpreload_setContext(ExecutionContext ctx);
