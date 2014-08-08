@@ -28,7 +28,7 @@ message(STATUS "OPENSSL_LIBRARIES = ${OPENSSL_LIBRARIES}")
 # Pth building
 #=============
 
-set(PTH_ROOT_DIR ${CMAKE_SOURCE_DIR}/gnu-pth)
+set(PTH_ROOT_DIR ${CMAKE_BINARY_DIR}/gnu-pth)
 include_directories(${PTH_ROOT_DIR})
 
 set(PTH_SOURCES
