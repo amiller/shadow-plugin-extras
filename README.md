@@ -1,3 +1,13 @@
+# pth-toy branch
+
+Note: this branch contains a pth user threads example. In the build directory:
+```
+cd build
+git clone https://github.com/amiller/gnu-pth.git -b shadow
+cd gnu-pth
+./configure --enable-epoll
+```
+
 # shadow-plugins-extra
 
 This repository holds additional plug-ins for Shadow, including a basic "hello world" example useful for developing new plug-ins.
