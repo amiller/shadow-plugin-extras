@@ -518,7 +518,7 @@ static inline PthTable* _get_active_pthtable(PluginPreloadWorker *worker) {
             return rc;\
     }\
     PluginPreloadWorker* worker = g_private_get(&pluginWorkerKey);\
-    if (!worker) {\
+    if (!worker || (worker->activeContext != EXECTX_PLUGIN && worker->activeContext != EXECTX_PTH)) { \
 	    rctype rc = real(__VA_ARGS__);\
             __sync_fetch_and_sub(&isRecursive, 1);\
 	    return rc;\
@@ -561,7 +561,7 @@ static inline PthTable* _get_active_pthtable(PluginPreloadWorker *worker) {
             return rc;\
     }\
     PluginPreloadWorker* worker = g_private_get(&pluginWorkerKey);\
-    if (!worker) {\
+    if (!worker || (worker->activeContext != EXECTX_PLUGIN && worker->activeContext != EXECTX_PTH)) { \
 	    func##_fp real;\
 	    SETSYM_OR_FAIL_V(real, #func, version);	\
 	    rctype rc = real(__VA_ARGS__);\
@@ -1236,7 +1236,7 @@ int ftruncate(int fd, off_t length) _SHADOW_GUARD(int, ftruncate, fd, length);
 int fsync(int fd) _SHADOW_GUARD(int, fsync, fd);
 int fdatasync(int fd) { return fsync(fd); }
 int syncfs(int fd) { assert(0); }
-int fallocate(int fd, int mode, off_t offset, off_t len) { assert(0); }
+//int fallocate(int fd, int mode, off_t offset, off_t len) { assert(0); }
 int fexecve(int fd, char *const argv[], char *const envp[]) { assert(0); }
 long fpathconf(int fd, int name) { assert(0); }
 int fchdir(int fd) { assert(0); }
