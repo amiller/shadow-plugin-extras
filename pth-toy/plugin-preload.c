@@ -1085,24 +1085,24 @@ int fcntl(int fd, int cmd, ...) {
 	if (!real) SETSYM_OR_FAIL(real, "fcntl");
 	assert(real);
 	if(__sync_fetch_and_add(&isRecursive, 1)) {
-		int rc = real(fd, cmd, va_arg(farg, mode_t));
+		int rc = real(fd, cmd, va_arg(farg, void *));
 		__sync_fetch_and_sub(&isRecursive, 1);
 		return rc;
 	}
 	PluginPreloadWorker* worker = g_private_get(&pluginWorkerKey);
 	if (!worker) {
-		int rc = real(fd, cmd, va_arg(farg, mode_t));
+		int rc = real(fd, cmd, va_arg(farg, void *));
 		__sync_fetch_and_sub(&isRecursive, 1);
 		return rc;
 	}
 	if (worker->activeContext != EXECTX_PLUGIN) {
-		int rc = worker->ftable.fcntl(fd, cmd, va_arg(farg, mode_t));
+		int rc = worker->ftable.fcntl(fd, cmd, va_arg(farg, void *));
 		__sync_fetch_and_sub(&isRecursive, 1);
 		return rc;
 	}
 	__sync_fetch_and_sub(&isRecursive, 1);
 	worker->activeContext = EXECTX_PTH;
-	int rc = worker->ftable.fcntl(fd, cmd, va_arg(farg, mode_t));
+	int rc = worker->ftable.fcntl(fd, cmd, va_arg(farg, void *));
 	worker->activeContext = EXECTX_PLUGIN;
 	return rc;
 }
@@ -1114,24 +1114,24 @@ int ioctl(int fd, unsigned long int request, ...) {
 	if (!real) SETSYM_OR_FAIL(real, "ioctl");
 	assert(real);
 	if(__sync_fetch_and_add(&isRecursive, 1)) {
-		int rc = real(fd, request, va_arg(farg, mode_t));
+		int rc = real(fd, request, va_arg(farg, void *));
 		__sync_fetch_and_sub(&isRecursive, 1);
 		return rc;
 	}
 	PluginPreloadWorker* worker = g_private_get(&pluginWorkerKey);
 	if (!worker) {
-		int rc = real(fd, request, va_arg(farg, mode_t));
+		int rc = real(fd, request, va_arg(farg, void *));
 		__sync_fetch_and_sub(&isRecursive, 1);
 		return rc;
 	}
 	if (worker->activeContext != EXECTX_PLUGIN) {
-		int rc = worker->ftable.ioctl(fd, request, va_arg(farg, mode_t));
+		int rc = worker->ftable.ioctl(fd, request, va_arg(farg, void *));
 		__sync_fetch_and_sub(&isRecursive, 1);
 		return rc;
 	}
 	__sync_fetch_and_sub(&isRecursive, 1);
 	worker->activeContext = EXECTX_PTH;
-	int rc = worker->ftable.ioctl(fd, request, va_arg(farg, mode_t));
+	int rc = worker->ftable.ioctl(fd, request, va_arg(farg, void *));
 	worker->activeContext = EXECTX_PLUGIN;
 	return rc;
 }
